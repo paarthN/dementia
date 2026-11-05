@@ -66,6 +66,8 @@ export function createScreenCoordinator(options: {
   status: () => ScreenStatus
   grant: () => void
   revoke: () => void
+  beginCapture: () => AbortSignal | null
+  finishCapture: () => void
   endCapture: () => void
   promptAccessibility: () => Promise<void>
   inspect: () => Promise<ToolResult>
@@ -148,6 +150,19 @@ export function createScreenCoordinator(options: {
     status: () => ({ access, captureActive }),
     grant() {
       access = 'on'
+    },
+    beginCapture() {
+      if (access !== 'on' || captureActive) {
+        return null
+      }
+      const abort = new AbortController()
+      captureAbort = abort
+      captureActive = true
+      return abort.signal
+    },
+    finishCapture() {
+      captureActive = false
+      captureAbort = null
     },
     endCapture() {
       captureActive = false
@@ -253,6 +268,14 @@ export function createScreenCoordinator(options: {
           status: 'failed',
           summary: "I won't look at your screen.",
           errorCode: 'capture_refused',
+          verification: { method: 'none', passed: false }
+        }
+      }
+      if (captureActive) {
+        return {
+          status: 'failed',
+          summary: "I'm already looking at the screen.",
+          errorCode: 'capture_busy',
           verification: { method: 'none', passed: false }
         }
       }

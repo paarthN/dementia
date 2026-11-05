@@ -35,7 +35,8 @@ import type { ActionResult, PanelView, SessionSnapshot } from '../shared/session
 import { guideUtterance } from '../shared/guides'
 import {
   applyGuidanceOverlayBehavior,
-  guidanceOverlayWindowOptions
+  guidanceOverlayWindowOptions,
+  type DisplaySpace
 } from '../shared/highlightGeometry'
 import { panelChrome, privacySettingsUrl } from '../shared/systemPermissions'
 import type { SystemSettingsSection } from '../shared/systemSettings'
@@ -70,6 +71,7 @@ import {
 } from './services/osBridge'
 import { TaskOrchestrator, type TaskOutcome } from './services/taskOrchestrator'
 import { createNativeMacAdapter } from './agent/ports/NativeMacAdapter'
+import { createObservationService, createObservingDesktopPort } from './agent/ObservationService'
 import { createRemoteAssistant } from './providers/assistant'
 import { listReminders } from './storage/reminders'
 import { devToolsAllowed, secureWebPreferences } from './windows/secureWebPreferences'
@@ -115,19 +117,28 @@ export class Desktop {
     })
     const helper = resolveHelperCommand()
     this.bridge = helper ? createMacOsBridge(helper) : createClosedOsBridge()
+    const displays = (): DisplaySpace[] =>
+      screen.getAllDisplays().map((display) => ({
+        id: String(display.id),
+        x: display.bounds.x,
+        y: display.bounds.y,
+        width: display.bounds.width,
+        height: display.bounds.height,
+        scaleFactor: display.scaleFactor
+      }))
     const desktopControl = createNativeMacAdapter({ bridge: this.bridge })
     this.screenHelp = createScreenCoordinator({
       bridge: this.bridge,
-      displays: () =>
-        screen.getAllDisplays().map((display) => ({
-          id: String(display.id),
-          x: display.bounds.x,
-          y: display.bounds.y,
-          width: display.bounds.width,
-          height: display.bounds.height,
-          scaleFactor: display.scaleFactor
-        }))
+      displays
     })
+    const observations = createObservationService({
+      desktop: desktopControl,
+      bridge: this.bridge,
+      screen: this.screenHelp,
+      displays,
+      onActivity: () => this.publish()
+    })
+    const desktopPort = createObservingDesktopPort(desktopControl, observations)
     this.screenHelp.setDeveloperInspection(
       loadPreferences(this.db).privacy.developerInspection === true
     )
@@ -142,7 +153,7 @@ export class Desktop {
       reminders: this.scheduler,
       screenPermission: () => this.screenHelp.status().access === 'on',
       screen: this.screenHelp,
-      desktop: desktopControl,
+      desktop: desktopPort,
       interpret: (text) => this.interpret(text)
     })
   }

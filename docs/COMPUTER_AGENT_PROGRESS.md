@@ -2,9 +2,9 @@
 
 Audit and implementation log for [AGENT_EXPANSION_SPEC.md](AGENT_EXPANSION_SPEC.md).
 
-**Phase:** 2 — native Mac window and Accessibility tools.  
+**Phase:** 3 — window screenshots and observation.  
 **Date:** 2026-11-05  
-**Next step:** Wait for approval. Then Phase 3 only. No OpenAI SDK and no Playwright.
+**Next step:** Wait for approval. Then Phase 4 only. No Playwright.
 
 ## Baseline
 
@@ -148,3 +148,35 @@ An earlier smoke looked at the front app when TextEdit was not front. That read 
 **Not verified:** A live click, scroll, or key press. Saving the TextEdit note. A live Stop during a helper call. Screenshot capture, which remains Phase 3.  
 **Blockers:** None for a review of Phase 2.  
 **Next phase:** Phase 3 after approval. Do not start it in this session.
+
+## Phase 3
+
+A picture is optional on `desktop.observe` when screen access is on. The helper writes one PNG in a private temp folder (`0700` directory, `0600` file) and the main process reads it, checks the window and the screen scale, then deletes it. The bytes stay in memory for that observation. `observationForModel` removes them. Nothing in this phase sends a picture to a model.
+
+The old capture treated a dark frame as protected because it sampled raw bitmap bytes. TextEdit in dark mode is mostly dark, so that check discarded a real window. A frame is now discarded only when a drawn sample is uniformly dark. If the single-window capture is dark, the helper tries once more by capturing that same window on its own display. Screen Recording is requested at most once per helper process. The Chat and sidebar banners already say when the screen is being used; they follow `captureActive`.
+
+### Live Mac, 2026-11-05
+
+`COMPANION_CAPTURE_SMOKE=1 npx vitest run tests/captureSmoke.test.ts` from `apps/desktop`, after `npm run build:helper`, passed once. The picture was TextEdit’s `note.txt`, with the words “Hello from Companion” in the page. The PNG was 41,743 bytes. The test’s pixel sample required a light pixel and contrast, and that check passed. I looked at the picture. It was not sent anywhere. The temp capture folder was empty afterward.
+
+An earlier call in the same session returned `capture_unavailable` and did not keep a picture. A later run did not see a TextEdit window before Vitest’s 5 second limit. That run was not a successful capture.
+
+### Checks
+
+| Command | Result |
+|---|---|
+| `npm run typecheck` | Passed. |
+| `npm run lint` | Passed. |
+| `npm test` | Passed. 115 tests, 5 skipped. The extra skip is `tests/captureSmoke.test.ts` unless `COMPANION_CAPTURE_SMOKE=1`. |
+| `npm run build` | Passed. Production bundle only. |
+| `npm run build:helper` | Passed. Release binary linked and ad-hoc signed. |
+| `COMPANION_CAPTURE_SMOKE=1 npx vitest run tests/captureSmoke.test.ts` from `apps/desktop` | Passed once. See the live note above. |
+
+### Phase 3 report
+
+**Implemented:** Window capture through ScreenCaptureKit, a one-shot PNG file that is deleted after it is read, scale and window checks, redaction of password fields, and a screen-use flag while a picture is taken.  
+**Verified:** The commands above. On this Mac, one TextEdit picture showed `note.txt` and “Hello from Companion.” Unit tests covered the wrong window, a blank helper result, a protected window, an expired snapshot, file deletion, the size limit, and Stop sharing.  
+**Not verified:** The running Electron window was not opened, so the banner was not seen by eye. The screen-use flag was checked in a unit test. A second live capture after the successful one did not find TextEdit before the test timed out.  
+**Blockers:** None for a review of Phase 3.  
+**Next phase:** Phase 4 after approval. Do not start it in this session. No picture has been sent to a model.
+

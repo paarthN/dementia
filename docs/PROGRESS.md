@@ -4,7 +4,7 @@ Living status for Companion. Update this file at the end of each phase with comm
 
 **Spec version:** 1.1 — 2026-11-04, macOS-first  
 **Last updated:** 2026-11-05  
-**Product status:** Phases 0–7 are in the repo. Chat can use demo mode on this Mac, or a cloud assistant through a server you run. Phase 8 was not started. A separate computer-use track has finished its Phase 2 native Mac tools. See [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
+**Product status:** Phases 0–7 are in the repo. Chat can use demo mode on this Mac, or a cloud assistant through a server you run. Phase 8 was not started. A separate computer-use track has finished its Phase 3 window pictures. See [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
 
 ## Where to read next
 
@@ -66,6 +66,10 @@ Re-verified on 2026-11-04 before Phase 0 was treated as ready.
 | macOS helper verified | Yes. `system.ping` and real Accessibility reads succeeded. See the Phase 5 log for what was not captured. |
 
 ## Log
+
+### 2026-11-05 — Computer-use Phase 3
+
+A window picture can be taken after screen access is on. The helper writes one PNG in a private temp folder, and the main process deletes it after reading. The picture stays in memory for that observation and is not sent to a model. On this Mac, one capture showed TextEdit’s `note.txt` with “Hello from Companion” in the page. The checks are in [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
 
 ### 2026-11-05 — Computer-use Phase 2
 

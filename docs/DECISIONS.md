@@ -59,3 +59,7 @@ The new multi-step agent extends the existing orchestrator, tool registry, and p
 Desktop actions added in Phase 2 use that same executor. A snapshot is valid for 3 seconds. A click or text change must still match one control in a fresh look, and the helper finds that control again before it acts. A text field with no name is used only when it is the only control of that role. A helper timeout or crash during a click, key, scroll, focus, or text change is not sent again.
 
 **If this is wrong:** a parallel executor will drift from the current approval and cancellation rules, and a press that legacy chat still confirms could run from the new loop without that check. Retrying a helper call after a timeout could also repeat a click or key that already landed.
+
+A screenshot is a file the helper writes in the user temp directory, mode 0700 for the folder and 0600 for the file. The main process reads it once, checks the window and the screen scale, then deletes it. The bytes stay in memory for that task. They are not sent to a model in this phase. A uniformly dark frame is discarded. If a single-window capture is dark, the helper tries once more by capturing that window on its own display. Screen Recording is requested at most once per helper process. Recorded 2026-11-05.
+
+**If this is wrong:** a temp file can outlive a crash for up to two minutes, and a dark app that is actually on screen can be treated as a protected capture.

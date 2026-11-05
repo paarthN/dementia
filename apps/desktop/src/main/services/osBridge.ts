@@ -21,6 +21,7 @@ const helperMethods = new Set([
   'desktop.setText',
   'desktop.keyPress',
   'desktop.scroll',
+  'desktop.captureWindow',
   'desktop.cancel'
 ])
 

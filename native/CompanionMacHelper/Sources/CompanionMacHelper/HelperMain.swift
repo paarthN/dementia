@@ -1,8 +1,11 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import CoreVideo
 import Foundation
+import ImageIO
 import ScreenCaptureKit
+import UniformTypeIdentifiers
 
 private let maxRequestBytes = 65_536
 private let maxNodesCap = 120
@@ -14,6 +17,32 @@ let protectedBundles: Set<String> = [
 ]
 
 private let responseLock = NSLock()
+
+private final class CapturePrompt: @unchecked Sendable {
+    private var asked = false
+    private let lock = NSLock()
+
+    func allowed(_ prompt: Bool) -> Bool {
+        if CGPreflightScreenCaptureAccess() {
+            return true
+        }
+        if !prompt {
+            return false
+        }
+        lock.lock()
+        let shouldAsk = !asked
+        if shouldAsk {
+            asked = true
+        }
+        lock.unlock()
+        if shouldAsk {
+            _ = CGRequestScreenCaptureAccess()
+        }
+        return CGPreflightScreenCaptureAccess()
+    }
+}
+
+private let capturePrompt = CapturePrompt()
 private let actionQueue = DispatchQueue(label: "com.companion.helper.actions")
 private let actionGroup = DispatchGroup()
 
@@ -72,6 +101,7 @@ enum HelperMain {
         application.setActivationPolicy(.prohibited)
         let worker = DispatchQueue(label: "com.companion.helper.stdio")
         worker.async {
+            sweepOldCaptures()
             while let line = readLine(strippingNewline: true) {
                 if line.utf8.count > maxRequestBytes {
                     writeError(id: "rejected", code: "request_too_large", message: "That request is too large.")
@@ -136,6 +166,9 @@ private func handle(_ box: RequestBox) {
 private func dispatch(method: String, params: [String: Any], requestId: String) -> [String: Any] {
     if method == "screen.captureOnce" {
         return capture(params)
+    }
+    if method == "desktop.captureWindow" {
+        return captureWindow(params, requestId: requestId)
     }
     return onMain { dispatchOnMain(method: method, params: params, requestId: requestId) }
 }
@@ -442,10 +475,7 @@ private func capture(_ params: [String: Any]) -> [String: Any] {
     case let .denied(message):
         return fail(code: "access_denied", message: message)
     case let .ready(window):
-        if !CGPreflightScreenCaptureAccess() {
-            if params["prompt"] as? Bool == true {
-                _ = CGRequestScreenCaptureAccess()
-            }
+        if !screenCaptureAllowed(prompt: params["prompt"] as? Bool == true) {
             return fail(code: "capture_refused", message: "Screen Recording permission is not granted.")
         }
         let box = ShotBox(fail(code: "capture_unavailable", message: "I couldn't take a screenshot."))
@@ -472,38 +502,63 @@ private final class ShotBox: @unchecked Sendable {
 private func takeShot(pid: pid_t, title: String) async -> [String: Any] {
     do {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let window = content.windows.first(where: { candidate in
-            candidate.owningApplication?.processID == pid && (title.isEmpty || candidate.title == title)
-        }) ?? content.windows.first(where: { $0.owningApplication?.processID == pid }) else {
+        let owned = content.windows.filter {
+            $0.owningApplication?.processID == pid && $0.isOnScreen && $0.windowLayer == 0
+        }
+        let pool = owned.isEmpty
+            ? content.windows.filter { $0.owningApplication?.processID == pid && $0.isOnScreen }
+            : owned
+        let titled = pool.filter { title.isEmpty || ($0.title ?? "") == title }
+        let candidates = titled.isEmpty ? pool : titled
+        guard let window = candidates.max(by: { lhs, rhs in
+            lhs.frame.width * lhs.frame.height < rhs.frame.width * rhs.frame.height
+        }) else {
             return fail(code: "protected_context", message: "That window can't be captured.")
         }
-        let filter = SCContentFilter(desktopIndependentWindow: window)
-        let configuration = SCStreamConfiguration()
-        configuration.capturesAudio = false
-        configuration.showsCursor = false
-        let scale = CGFloat(filter.pointPixelScale)
-        configuration.width = max(1, Int(window.frame.width * scale))
-        configuration.height = max(1, Int(window.frame.height * scale))
-        let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
-        let black = imageIsMostlyBlack(image)
-        let bytes = image.bytesPerRow * image.height
-        if black {
-            return fail(code: "protected_capture", message: "The capture was blank, so I discarded it.")
-        }
+        let shot = try await grabWindow(content: content, window: window)
         return ok([
-            "byteLength": bytes,
-            "width": image.width,
-            "height": image.height,
+            "byteLength": shot.image.width * shot.image.height * 4,
+            "width": shot.image.width,
+            "height": shot.image.height,
             "allBlack": false,
             "protected": false
         ])
+    } catch let problem as CaptureProblem {
+        return fail(code: problem.code, message: problem.message)
     } catch {
-        let text = String(describing: error)
-        if text.contains("-3801") || text.lowercased().contains("declined") {
-            return fail(code: "capture_refused", message: "Screen Recording permission is not granted.")
-        }
-        return fail(code: "capture_unavailable", message: "I couldn't take a screenshot.")
+        return captureFailure(error)
     }
+}
+
+private func captureWindow(_ params: [String: Any], requestId: String) -> [String: Any] {
+    guard params["consent"] as? Bool == true else {
+        return fail(code: "capture_refused", message: "I won't look at your screen.")
+    }
+    if !screenCaptureAllowed(prompt: params["prompt"] as? Bool == true) {
+        return fail(code: "capture_refused", message: "Screen Recording permission is not granted.")
+    }
+    let windowId = (params["windowId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let bundleId = (params["bundleId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let process = (params["processId"] as? NSNumber)?.intValue ?? -1
+    guard process > 0, let cgId = UInt32(windowId), !bundleId.isEmpty else {
+        return fail(code: "not_found", message: "That window is no longer open.")
+    }
+    if protectedBundles.contains(bundleId) {
+        return fail(code: "protected_context", message: "I can't work with that secure screen.")
+    }
+    if helperRequestCancelled(requestId) {
+        return fail(code: "aborted", message: "Stopped before the action.")
+    }
+    let box = ShotBox(fail(code: "capture_unavailable", message: "I couldn't take a screenshot."))
+    let semaphore = DispatchSemaphore(value: 0)
+    let pid = pid_t(process)
+    Task.detached {
+        let result = await takeWindowFile(requestId: requestId, windowId: cgId, pid: pid, bundleId: bundleId)
+        box.value = result
+        semaphore.signal()
+    }
+    semaphore.wait()
+    return box.value
 }
 
 private enum ForegroundRead {
@@ -805,26 +860,330 @@ private func copyAttribute(_ element: AXUIElement, _ attribute: String) -> CFTyp
     return value
 }
 
-private func imageIsMostlyBlack(_ image: CGImage) -> Bool {
-    guard let data = image.dataProvider?.data, let bytes = CFDataGetBytePtr(data) else {
-        return true
+private struct CaptureProblem: Error {
+    var code: String
+    var message: String
+}
+
+private struct GrabbedShot {
+    var image: CGImage
+    var scale: Double
+    var displayId: String
+    var pointWidth: Double
+    var pointHeight: Double
+}
+
+private func screenCaptureAllowed(prompt: Bool) -> Bool {
+    capturePrompt.allowed(prompt)
+}
+
+private func captureFailure(_ error: Error) -> [String: Any] {
+    let text = String(describing: error)
+    if text.contains("-3801") || text.lowercased().contains("declined") {
+        return fail(code: "capture_refused", message: "Screen Recording permission is not granted.")
     }
-    let length = CFDataGetLength(data)
-    if length == 0 {
-        return true
+    return fail(code: "capture_unavailable", message: "I couldn't take a screenshot.")
+}
+
+private func permissionDenied(_ error: Error) -> Bool {
+    let text = String(describing: error)
+    return text.contains("-3801") || text.lowercased().contains("declined")
+}
+
+private func takeWindowFile(requestId: String, windowId: CGWindowID, pid: pid_t, bundleId: String) async -> [String: Any] {
+    sweepOldCaptures()
+    if helperRequestCancelled(requestId) {
+        return fail(code: "aborted", message: "Stopped before the action.")
     }
-    let step = max(1, length / 2_000)
-    var dark = 0
-    var samples = 0
-    var index = 0
-    while index < length {
-        if bytes[index] < 8 {
-            dark += 1
+    do {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        guard let window = content.windows.first(where: { $0.windowID == windowId }) else {
+            return fail(code: "not_found", message: "That window can't be captured.")
         }
-        samples += 1
-        index += step
+        let owner = window.owningApplication
+        if owner?.processID != pid || owner?.bundleIdentifier != bundleId {
+            return fail(code: "focus_changed", message: "That was a different window, so I did not take a picture.")
+        }
+        if companionPids().contains(pid) || !window.isOnScreen {
+            return fail(code: "not_found", message: "That window is no longer open.")
+        }
+        if sensitiveTitle(window.title ?? "") {
+            return fail(code: "protected_context", message: "I can't work with that secure screen.")
+        }
+        if helperRequestCancelled(requestId) {
+            return fail(code: "aborted", message: "Stopped before the action.")
+        }
+        let shot = try await grabWindow(content: content, window: window)
+        if helperRequestCancelled(requestId) {
+            return fail(code: "aborted", message: "Stopped before the action.")
+        }
+        guard let stored = writeCapture(shot.image) else {
+            return fail(code: "capture_unavailable", message: "I couldn't keep that picture.")
+        }
+        if helperRequestCancelled(requestId) {
+            try? FileManager.default.removeItem(at: stored.url)
+            return fail(code: "aborted", message: "Stopped before the action.")
+        }
+        return ok([
+            "windowId": String(window.windowID),
+            "processId": Int(pid),
+            "bundleId": bundleId,
+            "title": clip(window.title ?? ""),
+            "displayId": shot.displayId,
+            "scale": shot.scale,
+            "width": shot.image.width,
+            "height": shot.image.height,
+            "pointWidth": shot.pointWidth,
+            "pointHeight": shot.pointHeight,
+            "byteLength": stored.bytes,
+            "filePath": stored.url.path,
+            "directory": stored.directory.path,
+            "blank": false,
+            "protected": false
+        ])
+    } catch let problem as CaptureProblem {
+        return fail(code: problem.code, message: problem.message)
+    } catch {
+        return captureFailure(error)
     }
-    return samples > 0 && dark * 100 / samples > 97
+}
+
+private func grabWindow(content: SCShareableContent, window: SCWindow) async throws -> GrabbedShot {
+    guard let display = displayFor(window: window, content: content) else {
+        throw CaptureProblem(code: "capture_unavailable", message: "I couldn't tell which screen that window is on.")
+    }
+    let scale = resolvedScale(window: window)
+    guard scale >= 1, scale <= 4 else {
+        throw CaptureProblem(code: "capture_unavailable", message: "I couldn't tell the screen scale.")
+    }
+    let image = try await captureWindowImage(content: content, window: window, scale: scale)
+    let fitted = fittedImage(image, maxEdge: 1280)
+    if frameLooksBlank(fitted) {
+        throw CaptureProblem(code: "protected_capture", message: "The capture was blank, so I discarded it.")
+    }
+    return GrabbedShot(
+        image: fitted,
+        scale: Double(scale),
+        displayId: String(display.displayID),
+        pointWidth: Double(window.frame.width),
+        pointHeight: Double(window.frame.height)
+    )
+}
+
+private func captureWindowImage(content: SCShareableContent, window: SCWindow, scale: CGFloat) async throws -> CGImage {
+    let independent = SCContentFilter(desktopIndependentWindow: window)
+    do {
+        let image = try await renderShot(filter: independent, window: window, scale: scale, source: nil)
+        if !frameLooksBlank(image) {
+            return image
+        }
+    } catch {
+        if permissionDenied(error) {
+            throw error
+        }
+    }
+    guard let display = displayFor(window: window, content: content) else {
+        throw CaptureProblem(code: "protected_capture", message: "The capture was blank, so I discarded it.")
+    }
+    let filter = SCContentFilter(display: display, including: [window])
+    if #available(macOS 14.2, *) {
+        filter.includeMenuBar = false
+    }
+    let source = CGRect(
+        x: window.frame.minX - display.frame.minX,
+        y: window.frame.minY - display.frame.minY,
+        width: window.frame.width,
+        height: window.frame.height
+    )
+    let image = try await renderShot(filter: filter, window: window, scale: scale, source: source)
+    if frameLooksBlank(image) {
+        throw CaptureProblem(code: "protected_capture", message: "The capture was blank, so I discarded it.")
+    }
+    return image
+}
+
+private func renderShot(filter: SCContentFilter, window: SCWindow, scale: CGFloat, source: CGRect?) async throws -> CGImage {
+    guard let size = outputSize(points: window.frame.size, scale: scale) else {
+        throw CaptureProblem(code: "capture_unavailable", message: "I couldn't tell the screen scale.")
+    }
+    let configuration = SCStreamConfiguration()
+    configuration.capturesAudio = false
+    configuration.showsCursor = false
+    configuration.scalesToFit = true
+    configuration.preservesAspectRatio = true
+    configuration.pixelFormat = kCVPixelFormatType_32BGRA
+    configuration.width = size.width
+    configuration.height = size.height
+    if #available(macOS 15.0, *) {
+        configuration.showMouseClicks = false
+    }
+    if let source, source.width > 1, source.height > 1 {
+        configuration.sourceRect = source
+    }
+    return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration)
+}
+
+private func resolvedScale(window: SCWindow) -> CGFloat {
+    let filter = SCContentFilter(desktopIndependentWindow: window)
+    let reported = CGFloat(filter.pointPixelScale)
+    if reported.isFinite, reported >= 1, reported <= 4 {
+        return reported
+    }
+    let frame = window.frame
+    let backing = onMain { () -> CGFloat in
+        let screen = NSScreen.screens.first { $0.frame.contains(CGPoint(x: frame.midX, y: frame.midY)) }
+            ?? NSScreen.screens.first { $0.frame.intersects(frame) }
+        return screen?.backingScaleFactor ?? 0
+    }
+    if backing.isFinite, backing >= 1, backing <= 4 {
+        return backing
+    }
+    return 0
+}
+
+private func outputSize(points: CGSize, scale: CGFloat) -> (width: Int, height: Int)? {
+    guard scale.isFinite, scale >= 1, scale <= 4 else {
+        return nil
+    }
+    var width = Int((points.width * scale).rounded())
+    var height = Int((points.height * scale).rounded())
+    if width < 2 || height < 2 {
+        return nil
+    }
+    let longest = max(width, height)
+    if longest > 1280 {
+        let fit = 1280.0 / Double(longest)
+        width = max(1, Int((Double(width) * fit).rounded()))
+        height = max(1, Int((Double(height) * fit).rounded()))
+    }
+    return (width, height)
+}
+
+private func displayFor(window: SCWindow, content: SCShareableContent) -> SCDisplay? {
+    let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+    return content.displays.first { $0.frame.contains(center) }
+        ?? content.displays.first { $0.frame.intersects(window.frame) }
+}
+
+private func frameLooksBlank(_ image: CGImage) -> Bool {
+    let columns = 40
+    let rows = 40
+    guard let context = CGContext(
+        data: nil,
+        width: columns,
+        height: rows,
+        bitsPerComponent: 8,
+        bytesPerRow: columns * 4,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        return true
+    }
+    context.interpolationQuality = .none
+    context.draw(image, in: CGRect(x: 0, y: 0, width: columns, height: rows))
+    guard let data = context.data else {
+        return true
+    }
+    let pixels = data.bindMemory(to: UInt8.self, capacity: columns * rows * 4)
+    var maxLuminance = 0
+    for index in 0..<(columns * rows) {
+        let offset = index * 4
+        let alpha = Int(pixels[offset + 3])
+        let luminance = alpha == 0
+            ? 0
+            : (Int(pixels[offset]) + Int(pixels[offset + 1]) + Int(pixels[offset + 2])) / 3
+        maxLuminance = max(maxLuminance, luminance)
+    }
+    return maxLuminance < 16
+}
+
+private func fittedImage(_ image: CGImage, maxEdge: Int) -> CGImage {
+    let longest = max(image.width, image.height)
+    if longest <= maxEdge {
+        return image
+    }
+    let fit = Double(maxEdge) / Double(longest)
+    let width = max(1, Int((Double(image.width) * fit).rounded()))
+    let height = max(1, Int((Double(image.height) * fit).rounded()))
+    guard let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        return image
+    }
+    context.interpolationQuality = .medium
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    return context.makeImage() ?? image
+}
+
+private func writeCapture(_ image: CGImage) -> (url: URL, directory: URL, bytes: Int)? {
+    guard let directory = try? captureDirectory() else {
+        return nil
+    }
+    let url = directory.appendingPathComponent("\(UUID().uuidString).png")
+    guard let bytes = writePng(image, to: url) else {
+        return nil
+    }
+    return (url, directory, bytes)
+}
+
+private func captureDirectory() throws -> URL {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("companion-captures", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    return directory
+}
+
+private func writePng(_ image: CGImage, to url: URL) -> Int? {
+    FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
+    guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+        try? FileManager.default.removeItem(at: url)
+        return nil
+    }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else {
+        try? FileManager.default.removeItem(at: url)
+        return nil
+    }
+    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    guard let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber else {
+        try? FileManager.default.removeItem(at: url)
+        return nil
+    }
+    let count = size.intValue
+    if count <= 0 || count > 1_500_000 {
+        try? FileManager.default.removeItem(at: url)
+        return nil
+    }
+    return count
+}
+
+private func sweepOldCaptures() {
+    guard let directory = try? captureDirectory() else {
+        return
+    }
+    let cutoff = Date().addingTimeInterval(-120)
+    guard let files = try? FileManager.default.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: [.contentModificationDateKey, .isSymbolicLinkKey],
+        options: [.skipsHiddenFiles]
+    ) else {
+        return
+    }
+    for file in files where file.pathExtension == "png" {
+        let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .isSymbolicLinkKey])
+        if values?.isSymbolicLink == true {
+            continue
+        }
+        if (values?.contentModificationDate ?? .distantPast) < cutoff {
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
 }
 
 private func bounded(_ value: Any?, default fallback: Int, cap: Int) -> Int {

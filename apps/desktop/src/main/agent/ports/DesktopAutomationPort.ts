@@ -46,7 +46,17 @@ export interface DesktopObservation {
   targets: DesktopTarget[]
   protected: boolean
   truncated: boolean
-  imageIncluded: false
+  imageIncluded: boolean
+  image?: DesktopImage
+}
+
+export interface DesktopImage {
+  mime: 'image/png'
+  bytes: Uint8Array
+  width: number
+  height: number
+  displayId: string
+  scale: number
 }
 
 export interface DesktopWindow {

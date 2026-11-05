@@ -162,7 +162,8 @@ function toToolResult(outcome: DesktopOutcome): ToolResult {
       ? {
           snapshotId: outcome.observation.snapshotId,
           windowId: outcome.observation.window.id,
-          appName: outcome.observation.app.name
+          appName: outcome.observation.app.name,
+          imageIncluded: outcome.observation.imageIncluded
         }
       : {}),
     ...(outcome.windows ? { windowCount: outcome.windows.length } : {})
