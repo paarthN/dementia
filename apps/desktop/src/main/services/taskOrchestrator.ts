@@ -3,7 +3,6 @@ import type { DatabaseSync } from 'node:sqlite'
 import {
   assistantTaskSchema,
   canonicalJson,
-  toolResultSchema,
   type AssistantTask,
   type PendingApproval,
   type PlannedStep,
@@ -11,10 +10,12 @@ import {
   type RoutedRequest,
   type ToolResult
 } from '../../shared/agent'
+import type { ActionOutcome } from '../../shared/computerAgent'
 import { routeUtterance, type RouterFavorite } from '../../shared/router'
 import { listFavorites, recordActivity } from '../storage/database'
 import type { CommandRunner } from './launcher'
-import { decidePolicy, type PolicyApproval } from './policyEngine'
+import type { PolicyApproval } from './policyEngine'
+import { AuthorizedToolExecutor } from '../agent/AuthorizedToolExecutor'
 import type { ReminderPort } from './reminderScheduler'
 import { AssistantPlanRejected } from '../providers/assistant'
 import {
@@ -41,6 +42,7 @@ export interface TaskOutcome {
   summary: string
   approval?: PendingApproval
   recovery?: ToolResult['recovery']
+  actionOutcome?: ActionOutcome
 }
 
 interface PlannedCall {
@@ -72,9 +74,11 @@ export interface OrchestratorOptions {
 
 export class TaskOrchestrator {
   private readonly registry: ToolRegistry
+  private readonly executor: AuthorizedToolExecutor
   private readonly tasks = new Map<string, AssistantTask>()
   private readonly approvals = new Map<string, StoredApproval>()
   private readonly cancelled = new Set<string>()
+  private readonly controllers = new Map<string, AbortController>()
   private activeTaskId: string | null = null
   private readonly now: () => Date
   private readonly timeZone: string
@@ -82,6 +86,7 @@ export class TaskOrchestrator {
 
   constructor(private readonly options: OrchestratorOptions) {
     this.registry = createToolRegistry(options.extraTools ?? [])
+    this.executor = new AuthorizedToolExecutor(this.registry)
     this.now = options.now ?? (() => new Date())
     this.timeZone = options.timeZone ?? 'UTC'
     this.timeoutMs = options.timeoutMs ?? 15_000
@@ -183,6 +188,7 @@ export class TaskOrchestrator {
     const task = this.tasks.get(taskId)
     this.cancelled.add(taskId)
     this.approvals.delete(taskId)
+    this.controllers.get(taskId)?.abort()
     if (!task) {
       return this.outcome(null, 'cancelled', 'I stopped. Nothing else will run for that request.')
     }
@@ -253,77 +259,74 @@ export class TaskOrchestrator {
         return this.finish(task, blocked.responseState, blocked.summary)
       }
 
-      const decision = decidePolicy(this.registry, {
+      const report = await this.executor.execute({
+        taskId: task.id,
         tool: call.tool,
         input: call.input,
         source: 'user',
         now: this.now(),
         screenPermission: this.screenAllowed(),
-        approval
+        approval,
+        signal: this.signalFor(task.id),
+        timeoutMs: this.timeoutMs,
+        deadlineAtMs: this.now().getTime() + 24 * 60 * 60 * 1000,
+        taskOwned: true,
+        context: this.context(task.id),
+        onStart: (name) => this.options.onTool?.(name)
       })
       const step: PlannedStep = {
         id: randomUUID(),
         tool: call.tool,
         input: call.input,
-        risk: decision.risk,
+        risk: report.risk,
         status: 'pending'
       }
       task.steps.push(step)
       task.currentStepIndex = index
 
-      if (decision.effect === 'deny') {
+      if (report.kind === 'denied' || report.kind === 'failed') {
         step.status = 'failed'
-        return this.finish(task, 'failure', decision.reason)
+        return this.finish(task, 'failure', report.summary)
       }
-      if (decision.effect === 'permission') {
+      if (report.kind === 'permission') {
         step.status = 'skipped'
         task.state = 'awaiting_permission'
-        return this.finish(task, 'needs_permission', decision.reason)
+        return this.finish(task, 'needs_permission', report.summary)
       }
-      if (decision.effect === 'confirm') {
+      if (report.kind === 'confirm') {
         step.status = 'pending'
-        return this.askConfirmation(task, call, decision.reason)
+        return this.askConfirmation(task, call, report.summary)
+      }
+      if (report.kind === 'cancelled') {
+        step.status = 'cancelled'
+        task.state = 'cancelled'
+        return this.finish(task, 'cancelled', report.summary)
+      }
+      if (report.kind === 'limited' || report.kind === 'uncertain') {
+        step.status = 'failed'
+        return this.finish(
+          task,
+          'failure',
+          report.summary,
+          undefined,
+          report.kind === 'uncertain' ? 'uncertain_after_timeout' : 'no_change'
+        )
       }
 
       step.status = 'running'
       task.state = 'executing'
-      this.options.onTool?.(call.tool)
-      const executeInput =
-        approval && call.tool === 'browser.openUrl'
-          ? { ...call.input, confirmed: true }
-          : call.input
-      let raw: unknown
-      try {
-        raw = await runWithTimeout(
-          this.registry.execute(call.tool, executeInput, this.context(task.id)),
-          this.timeoutMs
-        )
-      } catch (error) {
-        step.status = 'failed'
-        const timedOut = error instanceof Error && error.message === 'timeout'
-        return this.finish(
-          task,
-          'failure',
-          timedOut ? 'That took too long, so I stopped.' : "I couldn't finish that."
-        )
-      }
-
-      const parsed = toolResultSchema.safeParse(raw)
-      if (!parsed.success) {
-        step.status = 'failed'
-        return this.finish(task, 'failure', "I tried, but couldn't confirm it worked.")
-      }
-      lastSummary = parsed.data.summary
-      recovery = parsed.data.recovery
-      if (parsed.data.status === 'cancelled') {
+      const parsed = report.result
+      lastSummary = parsed.summary
+      recovery = parsed.recovery
+      if (parsed.status === 'cancelled') {
         step.status = 'cancelled'
         task.state = 'cancelled'
-        return this.finish(task, 'cancelled', parsed.data.summary, recovery)
+        return this.finish(task, 'cancelled', parsed.summary, recovery)
       }
-      if (parsed.data.status !== 'succeeded' || parsed.data.verification?.passed !== true) {
+      if (parsed.status !== 'succeeded' || parsed.verification?.passed !== true) {
         step.status = 'failed'
         const responseState = finished > 0 ? 'partial' : 'failure'
-        return this.finish(task, responseState, parsed.data.summary, recovery)
+        return this.finish(task, responseState, parsed.summary, recovery)
       }
       step.status = 'succeeded'
       finished += 1
@@ -408,7 +411,8 @@ export class TaskOrchestrator {
     task: AssistantTask,
     responseState: ResponseState,
     summary: string,
-    recovery?: ToolResult['recovery']
+    recovery?: ToolResult['recovery'],
+    actionOutcome?: ActionOutcome
   ): TaskOutcome {
     if (responseState === 'success') {
       task.state = 'completed'
@@ -427,16 +431,23 @@ export class TaskOrchestrator {
     task.updatedAtUtc = this.now().toISOString()
     assistantTaskSchema.parse(task)
     this.log(task, responseState, summary)
-    return this.outcome(task, responseState, summary, recovery)
+    return this.outcome(task, responseState, summary, recovery, actionOutcome)
   }
 
   private outcome(
     task: AssistantTask | null,
     responseState: ResponseState,
     summary: string,
-    recovery?: ToolResult['recovery']
+    recovery?: ToolResult['recovery'],
+    actionOutcome?: ActionOutcome
   ): TaskOutcome {
-    return { task, responseState, summary, recovery }
+    return {
+      task,
+      responseState,
+      summary,
+      recovery,
+      ...(actionOutcome ? { actionOutcome } : {})
+    }
   }
 
   private createTask(goal: string, mode: AssistantTask['mode']): AssistantTask {
@@ -456,15 +467,24 @@ export class TaskOrchestrator {
     return task
   }
 
-  private context(taskId: string): ToolContext {
-    const controller = new AbortController()
-    if (this.cancelled.has(taskId)) {
-      controller.abort()
+  private signalFor(taskId: string): AbortSignal {
+    let controller = this.controllers.get(taskId)
+    if (!controller) {
+      controller = new AbortController()
+      if (this.cancelled.has(taskId)) {
+        controller.abort()
+      }
+      this.controllers.set(taskId, controller)
     }
+    return controller.signal
+  }
+
+  private context(taskId: string): ToolContext {
+    const signal = this.signalFor(taskId)
     return {
       db: this.options.db,
       run: async (command, args) => {
-        if (this.cancelled.has(taskId)) {
+        if (this.cancelled.has(taskId) || signal.aborted) {
           return 1
         }
         return this.options.run(command, args)
@@ -476,7 +496,7 @@ export class TaskOrchestrator {
         listFavorites(this.options.db)
           .filter((favorite) => favorite.kind === 'application')
           .map((favorite) => favorite.target),
-      signal: controller.signal,
+      signal,
       reminders: this.options.reminders,
       screen: this.options.screen
     }
@@ -608,16 +628,4 @@ function confirmLabel(tool: string): string {
     return 'Press it'
   }
   return 'Continue'
-}
-
-function runWithTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('timeout')), timeoutMs)
-  })
-  return Promise.race([work, timeout]).finally(() => {
-    if (timer) {
-      clearTimeout(timer)
-    }
-  })
 }

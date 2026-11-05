@@ -425,6 +425,9 @@ describe('T-CHAT and T-SET-04', () => {
       ]
     }).runPlanned('hang', [{ tool: 'test.hang', input: {} }])
     expect(outcome.responseState).toBe('failure')
-    expect(outcome.summary).toBe('That took too long, so I stopped.')
+    expect(outcome.actionOutcome).toBe('uncertain_after_timeout')
+    expect(outcome.summary).toBe(
+      'That took too long, and I could not confirm it stopped. I will not start another action.'
+    )
   })
 })
