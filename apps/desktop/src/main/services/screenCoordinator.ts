@@ -18,7 +18,7 @@ import {
   type UiSnapshot
 } from '../../shared/inspection'
 import { unavailableVision, type VisionProvider } from '../../shared/vision'
-import { HelperCallError, type OsBridge } from './osBridge'
+import { HelperCallError, helperCallUnresolved, type OsBridge } from './osBridge'
 
 export interface ScreenStatus {
   access: 'off' | 'on'
@@ -73,7 +73,12 @@ export function createScreenCoordinator(options: {
   startGuide: (guideId: string) => Promise<ToolResult>
   point: (name: string, role?: string) => Promise<ToolResult>
   describeControl: (input: { name: string; role?: string }) => Promise<ControlLookup>
-  press: (input: { name: string; role?: string; text?: string }) => Promise<ToolResult>
+  press: (input: {
+    name: string
+    role?: string
+    text?: string
+    signal?: AbortSignal
+  }) => Promise<ToolResult>
   guideAction: (action: GuideAction) => Promise<ToolResult>
   currentGuide: () => GuideView | null
   clearGuide: () => void
@@ -482,7 +487,7 @@ export function createScreenCoordinator(options: {
             ...(before?.processId ? { processId: before.processId } : {}),
             ...(input.text ? { text: input.text } : {})
           },
-          { timeoutMs: 8_000 }
+          { timeoutMs: 8_000, signal: input.signal }
         )
         const body =
           raw && typeof raw === 'object'
@@ -512,6 +517,9 @@ export function createScreenCoordinator(options: {
           verification: { method: 'accessibility', passed: true }
         }
       } catch (error) {
+        if (helperCallUnresolved(error)) {
+          throw error
+        }
         if (error instanceof HelperCallError && error.code === 'protected_context') {
           return protectedResult
         }

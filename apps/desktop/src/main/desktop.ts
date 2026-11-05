@@ -69,6 +69,7 @@ import {
   type OsBridge
 } from './services/osBridge'
 import { TaskOrchestrator, type TaskOutcome } from './services/taskOrchestrator'
+import { createNativeMacAdapter } from './agent/ports/NativeMacAdapter'
 import { createRemoteAssistant } from './providers/assistant'
 import { listReminders } from './storage/reminders'
 import { devToolsAllowed, secureWebPreferences } from './windows/secureWebPreferences'
@@ -114,6 +115,7 @@ export class Desktop {
     })
     const helper = resolveHelperCommand()
     this.bridge = helper ? createMacOsBridge(helper) : createClosedOsBridge()
+    const desktopControl = createNativeMacAdapter({ bridge: this.bridge })
     this.screenHelp = createScreenCoordinator({
       bridge: this.bridge,
       displays: () =>
@@ -140,6 +142,7 @@ export class Desktop {
       reminders: this.scheduler,
       screenPermission: () => this.screenHelp.status().access === 'on',
       screen: this.screenHelp,
+      desktop: desktopControl,
       interpret: (text) => this.interpret(text)
     })
   }

@@ -56,4 +56,6 @@ Local builds use a stable ad-hoc signature so Accessibility permission survives 
 
 The new multi-step agent extends the existing orchestrator, tool registry, and policy engine through one shared authorized executor. It does not get a second, weaker policy. Legacy chat and `/v1/interpret` stay. Model calls remain behind the existing proxy. Recorded 2026-11-05 during the expansion audit, before any agent code.
 
-**If this is wrong:** a parallel executor will drift from the current approval and cancellation rules, and a press that legacy chat still confirms could run from the new loop without that check.
+Desktop actions added in Phase 2 use that same executor. A snapshot is valid for 3 seconds. A click or text change must still match one control in a fresh look, and the helper finds that control again before it acts. A text field with no name is used only when it is the only control of that role. A helper timeout or crash during a click, key, scroll, focus, or text change is not sent again.
+
+**If this is wrong:** a parallel executor will drift from the current approval and cancellation rules, and a press that legacy chat still confirms could run from the new loop without that check. Retrying a helper call after a timeout could also repeat a click or key that already landed.

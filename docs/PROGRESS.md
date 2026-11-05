@@ -3,8 +3,8 @@
 Living status for Companion. Update this file at the end of each phase with commands run and what actually worked. Do not mark a phase complete because the UI merely resembles the spec.
 
 **Spec version:** 1.1 — 2026-11-04, macOS-first  
-**Last updated:** 2026-11-04  
-**Product status:** Phases 0–7 are in the repo. Chat can use demo mode on this Mac, or a cloud assistant through a server you run. Phase 8 was not started.
+**Last updated:** 2026-11-05  
+**Product status:** Phases 0–7 are in the repo. Chat can use demo mode on this Mac, or a cloud assistant through a server you run. Phase 8 was not started. A separate computer-use track has finished its Phase 2 native Mac tools. See [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
 
 ## Where to read next
 
@@ -66,6 +66,10 @@ Re-verified on 2026-11-04 before Phase 0 was treated as ready.
 | macOS helper verified | Yes. `system.ping` and real Accessibility reads succeeded. See the Phase 5 log for what was not captured. |
 
 ## Log
+
+### 2026-11-05 — Computer-use Phase 2
+
+Native Mac tools can list windows, focus a window, read Accessibility controls, click one unique control, type into a text control, press a navigation key, and scroll. Chat does not call them yet. On this Mac, a temporary TextEdit note received “Hello from Companion” and Finder was brought forward. Click, scroll, and key press were not tried on the live desktop. The checks are in [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
 
 ### 2026-11-04 — Open installed apps by name
 

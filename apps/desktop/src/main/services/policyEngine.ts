@@ -29,7 +29,13 @@ const screenTools = new Set([
   'screen.captureOnce',
   'guidance.start',
   'guidance.point',
-  'ui.press'
+  'ui.press',
+  'desktop.observe',
+  'desktop.focusWindow',
+  'desktop.clickElement',
+  'desktop.setText',
+  'desktop.keyPress',
+  'desktop.scroll'
 ])
 
 export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): PolicyDecision {
@@ -91,6 +97,19 @@ export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): Po
     }
   }
 
+  if (
+    (request.tool === 'desktop.clickElement' ||
+      request.tool === 'desktop.setText' ||
+      request.tool === 'desktop.keyPress') &&
+    !approvalMatches(request)
+  ) {
+    return {
+      effect: 'confirm',
+      risk,
+      reason: desktopActionPreview(request.tool, request.input)
+    }
+  }
+
   if (risk === 'R2' && !approvalMatches(request)) {
     return {
       effect: 'confirm',
@@ -141,6 +160,23 @@ export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): Po
   }
 
   return { effect: 'allow', risk }
+}
+
+function desktopActionPreview(tool: string, input: Record<string, unknown>): string {
+  const rawName = typeof input.name === 'string' ? input.name : 'that control'
+  const name =
+    rawName
+      .replace(/[\r\n]+/g, ' ')
+      .trim()
+      .slice(0, 80) || 'that control'
+  if (tool === 'desktop.clickElement') {
+    return `I am about to press ${name}. Press it?`
+  }
+  if (tool === 'desktop.setText') {
+    return `I am about to type into ${name}. Type it?`
+  }
+  const chord = typeof input.chord === 'string' ? input.chord.slice(0, 40) : 'a key'
+  return `I am about to press the ${chord} key. Press it?`
 }
 
 function approvalMatches(request: PolicyRequest): boolean {

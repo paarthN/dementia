@@ -14,6 +14,8 @@ import {
   type CommandRunner
 } from './launcher'
 import type { ReminderPort } from './reminderScheduler'
+import type { DesktopAutomationPort } from '../agent/ports/DesktopAutomationPort'
+import { desktopToolDefinitions } from '../agent/tools/desktopTools'
 
 export const blockedToolNames = [
   'executeShell',
@@ -56,8 +58,14 @@ export interface ToolContext {
       appName?: string
       blocked?: boolean
     }>
-    press?: (input: { name: string; role?: string; text?: string }) => Promise<ToolResult>
+    press?: (input: {
+      name: string
+      role?: string
+      text?: string
+      signal?: AbortSignal
+    }) => Promise<ToolResult>
   }
+  desktop?: DesktopAutomationPort
 }
 
 export interface ToolDefinition {
@@ -114,6 +122,10 @@ function isBlockedName(name: string): boolean {
 }
 
 function builtinTools(): ToolDefinition[] {
+  return [...coreTools(), ...desktopToolDefinitions()]
+}
+
+function coreTools(): ToolDefinition[] {
   return [
     {
       name: 'apps.listAvailable',
@@ -244,7 +256,12 @@ function builtinTools(): ToolDefinition[] {
         const name = typeof input.name === 'string' ? input.name : ''
         const role = typeof input.role === 'string' ? input.role : undefined
         const text = typeof input.text === 'string' ? input.text : undefined
-        return context.screen.press({ name, ...(role ? { role } : {}), ...(text ? { text } : {}) })
+        return context.screen.press({
+          name,
+          signal: context.signal,
+          ...(role ? { role } : {}),
+          ...(text ? { text } : {})
+        })
       }
     },
     {

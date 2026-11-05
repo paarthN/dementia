@@ -7,11 +7,63 @@ import ScreenCaptureKit
 private let maxRequestBytes = 65_536
 private let maxNodesCap = 120
 private let maxDepthCap = 8
-private let protectedBundles: Set<String> = [
+let protectedBundles: Set<String> = [
     "com.apple.loginwindow",
     "com.apple.SecurityAgent",
     "com.apple.loginwindow.LWBuiltIn"
 ]
+
+private let responseLock = NSLock()
+private let actionQueue = DispatchQueue(label: "com.companion.helper.actions")
+private let actionGroup = DispatchGroup()
+
+private final class CancelBox: @unchecked Sendable {
+    private var ids: Set<String> = []
+    private let lock = NSLock()
+
+    func contains(_ id: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return ids.contains(id)
+    }
+
+    func insert(_ id: String) {
+        lock.lock()
+        ids.insert(id)
+        lock.unlock()
+    }
+
+    func remove(_ id: String) {
+        lock.lock()
+        ids.remove(id)
+        lock.unlock()
+    }
+}
+
+private let cancelledRequests = CancelBox()
+
+private final class RequestBox: @unchecked Sendable {
+    let id: String
+    let method: String
+    let params: [String: Any]
+    init(id: String, method: String, params: [String: Any]) {
+        self.id = id
+        self.method = method
+        self.params = params
+    }
+}
+
+func helperRequestCancelled(_ id: String) -> Bool {
+    cancelledRequests.contains(id)
+}
+
+private func markRequestCancelled(_ id: String) {
+    cancelledRequests.insert(id)
+}
+
+private func clearRequestCancelled(_ id: String) {
+    cancelledRequests.remove(id)
+}
 
 @main
 enum HelperMain {
@@ -40,23 +92,55 @@ enum HelperMain {
                     continue
                 }
                 let params = object["params"] as? [String: Any] ?? [:]
-                let result = dispatch(method: method, params: params)
-                writeLine(result.merging(["id": id, "version": 1]) { current, _ in current })
+                if method == "desktop.cancel" {
+                    if let target = params["requestId"] as? String, !target.isEmpty {
+                        markRequestCancelled(target)
+                    }
+                    writeLine(ok(["accepted": true]).merging(["id": id, "version": 1]) { current, _ in current })
+                    continue
+                }
+                let box = RequestBox(id: id, method: method, params: params)
+                actionGroup.enter()
+                actionQueue.async {
+                    defer { actionGroup.leave() }
+                    handle(box)
+                }
             }
+            actionGroup.wait()
             exit(0)
         }
         RunLoop.main.run()
     }
 }
 
-private func dispatch(method: String, params: [String: Any]) -> [String: Any] {
+private func handle(_ box: RequestBox) {
+    if helperRequestCancelled(box.id) {
+        writeLine(fail(code: "aborted", message: "Stopped before the action.").merging(["id": box.id, "version": 1]) { current, _ in current })
+        clearRequestCancelled(box.id)
+        return
+    }
+    let result = dispatch(method: box.method, params: box.params, requestId: box.id)
+    let acted = ((result["result"] as? [String: Any])?["acted"] as? Bool) == true
+    let body: [String: Any]
+    if helperRequestCancelled(box.id) && acted {
+        body = fail(code: "uncertain", message: "That action may already have finished. I will not try it again.")
+    } else if helperRequestCancelled(box.id) {
+        body = fail(code: "aborted", message: "Stopped before the action.")
+    } else {
+        body = result
+    }
+    writeLine(body.merging(["id": box.id, "version": 1]) { current, _ in current })
+    clearRequestCancelled(box.id)
+}
+
+private func dispatch(method: String, params: [String: Any], requestId: String) -> [String: Any] {
     if method == "screen.captureOnce" {
         return capture(params)
     }
-    return onMain { dispatchOnMain(method: method, params: params) }
+    return onMain { dispatchOnMain(method: method, params: params, requestId: requestId) }
 }
 
-private func dispatchOnMain(method: String, params: [String: Any]) -> [String: Any] {
+private func dispatchOnMain(method: String, params: [String: Any], requestId: String) -> [String: Any] {
     switch method {
     case "system.ping":
         return ok(["pong": true])
@@ -74,6 +158,20 @@ private func dispatchOnMain(method: String, params: [String: Any]) -> [String: A
         return find(params)
     case "ui.invokeElement":
         return invoke(params)
+    case "desktop.listWindows":
+        return listDesktopWindows(params)
+    case "desktop.focusWindow":
+        return focusDesktopWindow(params, requestId: requestId)
+    case "desktop.observe":
+        return observeDesktop(params, requestId: requestId)
+    case "desktop.clickElement":
+        return clickDesktopElement(params, requestId: requestId)
+    case "desktop.setText":
+        return setDesktopText(params, requestId: requestId)
+    case "desktop.keyPress":
+        return pressDesktopKey(params, requestId: requestId)
+    case "desktop.scroll":
+        return scrollDesktop(params, requestId: requestId)
     default:
         return fail(code: "unknown_method", message: "That helper method is not available.")
     }
@@ -746,11 +844,686 @@ private func fail(code: String, message: String, details: [String: Any]? = nil) 
     return ["ok": false, "error": error]
 }
 
+private let desktopTextLimit = 500
+private let desktopNodeCap = 120
+private let desktopTextRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox"]
+
+private struct DesktopTarget {
+    var id: String
+    var name: String
+    var role: String
+    var enabled: Bool
+    var value: String?
+    var bounds: [String: Double]?
+}
+
+private struct DesktopMatch {
+    var element: AXUIElement
+    var role: String
+    var name: String
+    var enabled: Bool
+}
+
+private struct ResolvedWindow {
+    var pid: pid_t
+    var windowId: String
+    var bundleId: String
+    var title: String
+    var element: AXUIElement
+    var appName: String
+}
+
+private enum WindowPick {
+    case ready(ResolvedWindow)
+    case failed([String: Any])
+}
+
+private enum MatchPick {
+    case ready(DesktopMatch)
+    case failed([String: Any])
+}
+
+private struct DesktopKey {
+    var code: CGKeyCode
+    var shift: Bool
+}
+
+private func listDesktopWindows(_ params: [String: Any]) -> [String: Any] {
+    let wanted = (params["bundleId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    var listed: [[String: Any]] = []
+    for window in onScreenWindows() {
+        if listed.count >= 40 {
+            break
+        }
+        let layer = (window[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+        if layer != 0 {
+            continue
+        }
+        guard let pid = windowPid(window), let windowId = windowNumber(window) else {
+            continue
+        }
+        if companionPids().contains(pid) {
+            continue
+        }
+        let owner = window[kCGWindowOwnerName as String] as? String ?? ""
+        if owner == "Window Server" || owner == "Dock" || owner == "Control Center" {
+            continue
+        }
+        let running = NSRunningApplication(processIdentifier: pid)
+        let bundleId = running?.bundleIdentifier
+        if let bundleId, protectedBundles.contains(bundleId) {
+            continue
+        }
+        if !wanted.isEmpty && bundleId != wanted {
+            continue
+        }
+        let title = clip(window[kCGWindowName as String] as? String ?? "")
+        if sensitiveTitle(title) {
+            continue
+        }
+        var item: [String: Any] = [
+            "windowId": windowId,
+            "appName": clip(running?.localizedName ?? owner),
+            "title": title,
+            "processId": Int(pid)
+        ]
+        if let bundleId {
+            item["bundleId"] = bundleId
+        }
+        listed.append(item)
+    }
+    return ok(["windows": listed])
+}
+
+private func focusDesktopWindow(_ params: [String: Any], requestId: String) -> [String: Any] {
+    let windowId = (params["windowId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let bundleId = (params["bundleId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard AXIsProcessTrusted() else {
+        return fail(code: "access_denied", message: "Accessibility permission is not granted.")
+    }
+    guard let cg = cgWindow(id: windowId), let pid = windowPid(cg) else {
+        return fail(code: "not_found", message: "That window is no longer open.")
+    }
+    let running = NSRunningApplication(processIdentifier: pid)
+    if running?.bundleIdentifier != bundleId || bundleId.isEmpty {
+        return fail(code: "focus_changed", message: "That window is not in the app I expected.")
+    }
+    if protectedBundles.contains(bundleId) || sensitiveTitle(cg[kCGWindowName as String] as? String ?? "") {
+        return fail(code: "protected_context", message: "I can't work with that secure screen.")
+    }
+    if helperRequestCancelled(requestId) {
+        return fail(code: "aborted", message: "Stopped before the action.")
+    }
+    let title = cg[kCGWindowName as String] as? String ?? ""
+    activateApp(pid)
+    var raised = false
+    if let element = matchingWindow(pid: pid, title: title) {
+        raised = AXUIElementPerformAction(element, kAXRaiseAction as CFString) == .success
+    }
+    let front = NSWorkspace.shared.frontmostApplication
+    let verified = front?.processIdentifier == pid && front?.bundleIdentifier == bundleId
+    if !raised && !verified {
+        return fail(code: "unsupported", message: "I couldn't bring that window forward.")
+    }
+    return ok([
+        "acted": true,
+        "verified": verified,
+        "windowId": windowId,
+        "processId": Int(pid),
+        "bundleId": bundleId,
+        "appName": clip(running?.localizedName ?? "")
+    ])
+}
+
+private func observeDesktop(_ params: [String: Any], requestId: String) -> [String: Any] {
+    guard AXIsProcessTrusted() else {
+        return fail(code: "access_denied", message: "Accessibility permission is not granted.")
+    }
+    let requestedId = (params["windowId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let pid: pid_t
+    let windowId: String
+    let title: String
+    let bundleId: String?
+    let appName: String
+    let element: AXUIElement?
+    if !requestedId.isEmpty {
+        guard let cg = cgWindow(id: requestedId), let owner = windowPid(cg) else {
+            return fail(code: "not_found", message: "That window is no longer open.")
+        }
+        let running = NSRunningApplication(processIdentifier: owner)
+        if let bundle = running?.bundleIdentifier, protectedBundles.contains(bundle) {
+            return fail(code: "protected_context", message: "I can't work with that secure screen.")
+        }
+        let cgTitle = cg[kCGWindowName as String] as? String ?? ""
+        if sensitiveTitle(cgTitle) {
+            return fail(code: "protected_context", message: "I can't work with that secure screen.")
+        }
+        guard let matched = matchingWindow(pid: owner, title: cgTitle) else {
+            return fail(code: "unsupported", message: "I can't find that window's controls.")
+        }
+        pid = owner
+        windowId = requestedId
+        title = cgTitle
+        bundleId = running?.bundleIdentifier
+        appName = running?.localizedName ?? ""
+        element = matched
+    } else {
+        switch readForeground() {
+        case let .denied(message):
+            return fail(code: "access_denied", message: message)
+        case let .protected(kind):
+            return fail(code: "protected_context", message: "I can't work with that secure screen.", details: ["protection": kind])
+        case let .ready(window):
+            pid = window.processId
+            title = window.title
+            bundleId = window.bundleId
+            appName = window.processName ?? ""
+            element = window.element
+            windowId = onScreenWindows().first { info in
+                windowPid(info) == window.processId &&
+                    (window.title.isEmpty || (info[kCGWindowName as String] as? String) == window.title)
+            }.flatMap(windowNumber) ?? "pid:\(window.processId)"
+        }
+    }
+    if helperRequestCancelled(requestId) {
+        return fail(code: "aborted", message: "Stopped before the action.")
+    }
+    var targets: [DesktopTarget] = []
+    var truncated = false
+    var sawSecure = false
+    if let element {
+        walkDesktop(
+            element,
+            depth: maxDepthCap,
+            into: &targets,
+            sawSecure: &sawSecure,
+            truncated: &truncated,
+            requestId: requestId
+        )
+    }
+    if sawSecure {
+        return fail(code: "protected_context", message: "I can't work with that secure screen.", details: ["protection": "secure_field"])
+    }
+    if helperRequestCancelled(requestId) {
+        return fail(code: "aborted", message: "Stopped before the action.")
+    }
+    var payload: [String: Any] = [
+        "windowId": windowId,
+        "processId": Int(pid),
+        "appName": clip(appName),
+        "title": clip(title),
+        "protected": false,
+        "truncated": truncated,
+        "targets": targets.map { target -> [String: Any] in
+            var item: [String: Any] = [
+                "id": target.id,
+                "role": target.role,
+                "name": target.name,
+                "enabled": target.enabled,
+                "bounds": target.bounds ?? NSNull()
+            ]
+            if let value = target.value {
+                item["value"] = value
+            }
+            return item
+        }
+    ]
+    if let bundleId {
+        payload["bundleId"] = bundleId
+    }
+    return ok(payload)
+}
+
+private func clickDesktopElement(_ params: [String: Any], requestId: String) -> [String: Any] {
+    switch pickWindow(params) {
+    case let .failed(body):
+        return body
+    case let .ready(window):
+        switch oneMatch(root: window.element, name: params["name"] as? String ?? "", role: params["role"] as? String ?? "") {
+        case let .failed(body):
+            return body
+        case let .ready(match):
+            if helperRequestCancelled(requestId) {
+                return fail(code: "aborted", message: "Stopped before the action.")
+            }
+            if !performPress(match.element, role: match.role) {
+                return fail(code: "unsupported", message: "I couldn't press that control.")
+            }
+            return ok(["acted": true, "name": match.name, "role": match.role])
+        }
+    }
+}
+
+private func setDesktopText(_ params: [String: Any], requestId: String) -> [String: Any] {
+    guard let text = params["text"] as? String else {
+        return fail(code: "not_allowlisted", message: "I can type into a text field.")
+    }
+    if text.count > desktopTextLimit {
+        return fail(code: "not_allowlisted", message: "That text is too long.")
+    }
+    let role = params["role"] as? String ?? ""
+    if !desktopTextRoles.contains(role) {
+        return fail(code: "not_allowlisted", message: "I can type into a text field.")
+    }
+    switch pickWindow(params) {
+    case let .failed(body):
+        return body
+    case let .ready(window):
+        switch oneMatch(root: window.element, name: params["name"] as? String ?? "", role: role) {
+        case let .failed(body):
+            return body
+        case let .ready(match):
+            if !desktopTextRoles.contains(match.role) {
+                return fail(code: "not_allowlisted", message: "I can type into a text field.")
+            }
+            if helperRequestCancelled(requestId) {
+                return fail(code: "aborted", message: "Stopped before the action.")
+            }
+            let setError = AXUIElementSetAttributeValue(match.element, kAXValueAttribute as CFString, text as CFTypeRef)
+            if setError != .success {
+                return fail(code: "unsupported", message: "I couldn't type into that field.")
+            }
+            let readBack = stringAttribute(match.element, kAXValueAttribute) ?? ""
+            return ok([
+                "acted": true,
+                "verified": readBack == text,
+                "name": match.name,
+                "role": match.role,
+                "value": clipText(readBack)
+            ])
+        }
+    }
+}
+
+private func pressDesktopKey(_ params: [String: Any], requestId: String) -> [String: Any] {
+    let chord = (params["chord"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    guard let key = desktopKey(chord) else {
+        return fail(code: "not_allowlisted", message: "I can only press navigation keys.")
+    }
+    switch pickWindow(params) {
+    case let .failed(body):
+        return body
+    case let .ready(window):
+        let front = NSWorkspace.shared.frontmostApplication
+        if front?.processIdentifier != window.pid || front?.bundleIdentifier != window.bundleId {
+            return fail(code: "focus_changed", message: "That app is not in front, so I did not press a key.")
+        }
+        if helperRequestCancelled(requestId) {
+            return fail(code: "aborted", message: "Stopped before the action.")
+        }
+        guard
+            let down = CGEvent(keyboardEventSource: nil, virtualKey: key.code, keyDown: true),
+            let up = CGEvent(keyboardEventSource: nil, virtualKey: key.code, keyDown: false)
+        else {
+            return fail(code: "unsupported", message: "I couldn't press that key.")
+        }
+        if key.shift {
+            down.flags = .maskShift
+            up.flags = .maskShift
+        }
+        down.postToPid(window.pid)
+        up.postToPid(window.pid)
+        return ok(["acted": true, "verified": false, "chord": chord])
+    }
+}
+
+private func scrollDesktop(_ params: [String: Any], requestId: String) -> [String: Any] {
+    let direction = (params["direction"] as? String)?.lowercased() ?? ""
+    let amount = params["amount"] as? Int ?? 0
+    if !["up", "down", "left", "right"].contains(direction) || amount < 1 || amount > 5 {
+        return fail(code: "not_allowlisted", message: "I can scroll a short distance up, down, left, or right.")
+    }
+    switch pickWindow(params) {
+    case let .failed(body):
+        return body
+    case let .ready(window):
+        let vertical = direction == "up" || direction == "down"
+        guard let bar = findScrollBar(root: window.element, vertical: vertical) else {
+            return fail(code: "unsupported", message: "I can't find a scrollbar in that window.")
+        }
+        let before = numberAttribute(bar, "AXValue")
+        let action = (direction == "down" || direction == "right") ? "AXIncrement" : "AXDecrement"
+        var acted = false
+        for _ in 0..<amount {
+            if helperRequestCancelled(requestId) {
+                return acted
+                    ? ok(["acted": true, "verified": false])
+                    : fail(code: "aborted", message: "Stopped before the action.")
+            }
+            if AXUIElementPerformAction(bar, action as CFString) != .success {
+                break
+            }
+            acted = true
+        }
+        if !acted {
+            return fail(code: "unsupported", message: "I couldn't scroll that window.")
+        }
+        let after = numberAttribute(bar, "AXValue")
+        let verified = before != nil && after != nil && before != after
+        return ok(["acted": true, "verified": verified])
+    }
+}
+
+private func desktopKey(_ chord: String) -> DesktopKey? {
+    // Virtual key codes match kVK_* in HIToolbox Events.h.
+    switch chord {
+    case "tab":
+        return DesktopKey(code: 0x30, shift: false)
+    case "shift+tab":
+        return DesktopKey(code: 0x30, shift: true)
+    case "escape":
+        return DesktopKey(code: 0x35, shift: false)
+    case "up":
+        return DesktopKey(code: 0x7E, shift: false)
+    case "down":
+        return DesktopKey(code: 0x7D, shift: false)
+    case "left":
+        return DesktopKey(code: 0x7B, shift: false)
+    case "right":
+        return DesktopKey(code: 0x7C, shift: false)
+    case "pageup":
+        return DesktopKey(code: 0x74, shift: false)
+    case "pagedown":
+        return DesktopKey(code: 0x79, shift: false)
+    case "home":
+        return DesktopKey(code: 0x73, shift: false)
+    case "end":
+        return DesktopKey(code: 0x77, shift: false)
+    default:
+        return nil
+    }
+}
+
+private func pickWindow(_ params: [String: Any]) -> WindowPick {
+    guard AXIsProcessTrusted() else {
+        return .failed(fail(code: "access_denied", message: "Accessibility permission is not granted."))
+    }
+    let windowId = (params["windowId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let bundleId = (params["bundleId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let processId = params["processId"] as? Int ?? 0
+    if windowId.isEmpty || bundleId.isEmpty || processId <= 0 {
+        return .failed(fail(code: "not_found", message: "I need the app and window before I can do that."))
+    }
+    guard let cg = cgWindow(id: windowId), let pid = windowPid(cg), pid == pid_t(processId) else {
+        return .failed(fail(code: "focus_changed", message: "The window changed, so I did not continue."))
+    }
+    if protectedBundles.contains(bundleId) {
+        return .failed(fail(code: "protected_context", message: "I can't work with that secure screen."))
+    }
+    if NSRunningApplication(processIdentifier: pid)?.bundleIdentifier != bundleId {
+        return .failed(fail(code: "focus_changed", message: "The window changed, so I did not continue."))
+    }
+    let title = cg[kCGWindowName as String] as? String ?? ""
+    if sensitiveTitle(title) {
+        return .failed(fail(code: "protected_context", message: "I can't work with that secure screen."))
+    }
+    guard let element = matchingWindow(pid: pid, title: title) else {
+        return .failed(fail(code: "unsupported", message: "I can't find that window's controls."))
+    }
+    let appName = NSRunningApplication(processIdentifier: pid)?.localizedName ?? ""
+    return .ready(ResolvedWindow(
+        pid: pid,
+        windowId: windowId,
+        bundleId: bundleId,
+        title: title,
+        element: element,
+        appName: appName
+    ))
+}
+
+private func oneMatch(root: AXUIElement, name: String, role: String) -> MatchPick {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    if role.isEmpty {
+        return .failed(fail(code: "not_found", message: "I can't find that control."))
+    }
+    let matchByRole = trimmed.isEmpty
+    if matchByRole && !desktopTextRoles.contains(role) {
+        return .failed(fail(code: "not_found", message: "That control doesn't have a name, so I didn't use it."))
+    }
+    if !matchByRole && sensitiveName(trimmed) {
+        return .failed(fail(code: "protected_context", message: "I won't use a password field."))
+    }
+    var found: [DesktopMatch] = []
+    var secure = false
+    collectDesktopMatches(
+        root,
+        depth: maxDepthCap,
+        name: trimmed,
+        role: role,
+        matchByRole: matchByRole,
+        into: &found,
+        secure: &secure
+    )
+    if secure {
+        return .failed(fail(code: "protected_context", message: "I can't work with that secure screen.", details: ["protection": "secure_field"]))
+    }
+    if found.count > 1 {
+        return .failed(fail(code: "ambiguous", message: "Which one should I use?"))
+    }
+    guard let match = found.first else {
+        return .failed(fail(code: "not_found", message: "I can't find that control."))
+    }
+    if !match.enabled {
+        return .failed(fail(code: "disabled", message: "That control is disabled, so I did not use it."))
+    }
+    return .ready(match)
+}
+
+private func collectDesktopMatches(
+    _ element: AXUIElement,
+    depth: Int,
+    name: String,
+    role: String,
+    matchByRole: Bool,
+    into found: inout [DesktopMatch],
+    secure: inout Bool
+) {
+    if secure {
+        return
+    }
+    let axRole = stringAttribute(element, kAXRoleAttribute) ?? ""
+    let subrole = stringAttribute(element, kAXSubroleAttribute) ?? ""
+    if axRole == "AXSecureTextField" || subrole == "AXSecureTextField" || subrole == (kAXSecureTextFieldSubrole as String) {
+        secure = true
+        return
+    }
+    let label = labelOf(element, role: axRole)
+    let enabled = boolAttribute(element, kAXEnabledAttribute) ?? true
+    if axRole == role && (matchByRole || sameControlName(label, name)) {
+        found.append(DesktopMatch(element: element, role: axRole, name: label, enabled: enabled))
+    }
+    if depth <= 0 {
+        return
+    }
+    for child in childrenOf(element) ?? [] {
+        collectDesktopMatches(
+            child,
+            depth: depth - 1,
+            name: name,
+            role: role,
+            matchByRole: matchByRole,
+            into: &found,
+            secure: &secure
+        )
+        if secure {
+            return
+        }
+    }
+}
+
+private func walkDesktop(
+    _ element: AXUIElement,
+    depth: Int,
+    into targets: inout [DesktopTarget],
+    sawSecure: inout Bool,
+    truncated: inout Bool,
+    requestId: String
+) {
+    if helperRequestCancelled(requestId) || sawSecure {
+        return
+    }
+    if targets.count >= desktopNodeCap {
+        truncated = true
+        return
+    }
+    let role = stringAttribute(element, kAXRoleAttribute) ?? ""
+    let subrole = stringAttribute(element, kAXSubroleAttribute) ?? ""
+    if role == "AXSecureTextField" || subrole == "AXSecureTextField" || subrole == (kAXSecureTextFieldSubrole as String) {
+        sawSecure = true
+        return
+    }
+    let name = labelOf(element, role: role)
+    let enabled = boolAttribute(element, kAXEnabledAttribute) ?? true
+    let container = name.isEmpty && [
+        "AXGroup", "AXScrollArea", "AXSplitGroup", "AXRow", "AXCell", "AXLayoutArea",
+        "AXList", "AXOutline", "AXScrollBar", "AXSplitter", "AXToolbar"
+    ].contains(role)
+    if !container && role != "AXWindow" && role != "AXApplication" && role != "AXMenuBar" {
+        var value: String?
+        if desktopTextRoles.contains(role), let raw = stringAttribute(element, kAXValueAttribute) {
+            value = clipText(raw)
+        }
+        targets.append(DesktopTarget(
+            id: "node-\(targets.count)",
+            name: name,
+            role: role,
+            enabled: enabled,
+            value: value,
+            bounds: boundsOf(element)
+        ))
+    }
+    if depth <= 0 {
+        return
+    }
+    guard let children = childrenOf(element) else {
+        return
+    }
+    for child in children {
+        if helperRequestCancelled(requestId) || sawSecure || targets.count >= desktopNodeCap {
+            truncated = targets.count >= desktopNodeCap
+            return
+        }
+        if let bounds = boundsOf(child), (bounds["width"] ?? 0) <= 0 || (bounds["height"] ?? 0) <= 0 {
+            continue
+        }
+        walkDesktop(
+            child,
+            depth: depth - 1,
+            into: &targets,
+            sawSecure: &sawSecure,
+            truncated: &truncated,
+            requestId: requestId
+        )
+    }
+}
+
+private func findScrollBar(root: AXUIElement, vertical: Bool) -> AXUIElement? {
+    var bars: [(AXUIElement, String)] = []
+    gatherScrollBars(root, depth: maxDepthCap, into: &bars)
+    let wanted = vertical ? "AXVerticalOrientation" : "AXHorizontalOrientation"
+    let exact = bars.filter { $0.1 == wanted }
+    if exact.count == 1 {
+        return exact[0].0
+    }
+    if exact.isEmpty && bars.count == 1 {
+        return bars[0].0
+    }
+    return nil
+}
+
+private func gatherScrollBars(_ element: AXUIElement, depth: Int, into bars: inout [(AXUIElement, String)]) {
+    let role = stringAttribute(element, kAXRoleAttribute) ?? ""
+    if role == "AXScrollBar" {
+        bars.append((element, stringAttribute(element, "AXOrientation") ?? ""))
+    }
+    if depth <= 0 {
+        return
+    }
+    for child in childrenOf(element) ?? [] {
+        gatherScrollBars(child, depth: depth - 1, into: &bars)
+    }
+}
+
+private func matchingWindow(pid: pid_t, title: String) -> AXUIElement? {
+    let windows = axWindowList(AXUIElementCreateApplication(pid))
+    if title.isEmpty {
+        if windows.count == 1 {
+            return windows[0]
+        }
+        return focusedWindow(pid: pid, title: title)
+    }
+    let matches = windows.filter { (stringAttribute($0, kAXTitleAttribute) ?? "") == title }
+    if matches.count == 1 {
+        return matches[0]
+    }
+    return focusedWindow(pid: pid, title: title)
+}
+
+private func focusedWindow(pid: pid_t, title: String) -> AXUIElement? {
+    guard case let .ready(window) = readApp(pid: pid) else {
+        return nil
+    }
+    if !title.isEmpty && window.title != title {
+        return nil
+    }
+    return window.element
+}
+
+private func axWindowList(_ application: AXUIElement) -> [AXUIElement] {
+    guard let raw = copyAttribute(application, "AXWindows") else {
+        return []
+    }
+    return raw as? [AXUIElement] ?? []
+}
+
+private func onScreenWindows() -> [[String: Any]] {
+    CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+}
+
+private func cgWindow(id: String) -> [String: Any]? {
+    onScreenWindows().first { windowNumber($0) == id }
+}
+
+private func windowNumber(_ window: [String: Any]) -> String? {
+    guard let number = window[kCGWindowNumber as String] as? NSNumber else {
+        return nil
+    }
+    return String(number.uint32Value)
+}
+
+private func windowPid(_ window: [String: Any]) -> pid_t? {
+    guard let owner = window[kCGWindowOwnerPID as String] as? NSNumber else {
+        return nil
+    }
+    let pid = pid_t(owner.int32Value)
+    return pid > 0 ? pid : nil
+}
+
+private func numberAttribute(_ element: AXUIElement, _ attribute: String) -> Double? {
+    guard let raw = copyAttribute(element, attribute) as? NSNumber else {
+        return nil
+    }
+    return raw.doubleValue
+}
+
+private func sensitiveTitle(_ title: String) -> Bool {
+    sensitiveName(title)
+}
+
+private func clipText(_ text: String) -> String {
+    if text.count <= desktopTextLimit {
+        return text
+    }
+    return String(text.prefix(desktopTextLimit))
+}
+
 private func writeError(id: String, code: String, message: String) {
     writeLine(fail(code: code, message: message).merging(["id": id, "version": 1]) { current, _ in current })
 }
 
 private func writeLine(_ object: [String: Any]) {
+    responseLock.lock()
+    defer { responseLock.unlock() }
     guard let data = try? JSONSerialization.data(withJSONObject: object), let text = String(data: data, encoding: .utf8) else {
         fputs("{\"id\":\"rejected\",\"version\":1,\"ok\":false,\"error\":{\"code\":\"bad_response\",\"message\":\"The helper could not encode a response.\"}}\n", stdout)
         return

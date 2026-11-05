@@ -176,7 +176,9 @@ function isUnresolvedNativeStop(error: unknown): boolean {
   return (
     code === 'aborted' ||
     error.message === 'That took too long, so I stopped.' ||
-    error.message === 'timeout'
+    error.message === 'timeout' ||
+    code === 'timeout' ||
+    code === 'uncertain'
   )
 }
 

@@ -2,9 +2,9 @@
 
 Audit and implementation log for [AGENT_EXPANSION_SPEC.md](AGENT_EXPANSION_SPEC.md).
 
-**Phase:** 1 — shared executor, task state, and a fake agent.  
+**Phase:** 2 — native Mac window and Accessibility tools.  
 **Date:** 2026-11-05  
-**Next step:** Phase 2, only after approval. Native window and Accessibility tools. No OpenAI SDK and no Playwright.
+**Next step:** Wait for approval. Then Phase 3 only. No OpenAI SDK and no Playwright.
 
 ## Baseline
 
@@ -109,3 +109,42 @@ No real autonomous Mac action exists yet. The fake provider never calls OpenAI. 
 **Not verified:** A live TextEdit press, a fresh screenshot, and Stop during a real helper call.  
 **Blockers:** None for a review of Phase 1.  
 **Next phase:** Phase 2 after approval.
+
+## Phase 2
+
+The new desktop tools are `desktop.listWindows`, `desktop.focusWindow`, `desktop.observe`, `desktop.clickElement`, `desktop.setText`, `desktop.keyPress`, and `desktop.scroll`. They go through `NativeMacAdapter` and the existing helper. Chat still does not plan these tools. `apps.open` is unchanged. There is no model and no Playwright.
+
+A snapshot expires after 3 seconds. A click or text edit must name one control from that snapshot, then the adapter looks again and the helper finds the control before acting. Two controls with the same name are not used. A disabled, protected, or mismatched control is not used. Text is limited to 500 characters and is accepted only in a text field, text area, or combo box. A text control with no name is accepted only when it is the only control of that role. Keys are limited to tab, shift+tab, escape, the arrow keys, page up, page down, home, and end. Scroll is 1 to 5 steps on an Accessibility scrollbar. `includeImage` does not capture a picture.
+
+If a mutating helper call times out or the helper crashes after the request was sent, the result is uncertain and that call is not repeated. Stop before the request is sent does not count as uncertain. `ui.invokeElement` is in the same no-retry set.
+
+### Live Mac, 2026-11-05
+
+`COMPANION_DESKTOP_SMOKE=1 npx vitest run tests/desktopSmoke.test.ts` from `apps/desktop`, after `npm run build:helper`:
+
+- Window list succeeded. A later check found TextEdit by bundle id.
+- Observing that TextEdit window succeeded and reported 7 controls, including one text area. No picture was taken.
+- Typing “Hello from Companion” into that text area returned `success_verified`. The note was a new empty file in a temporary directory. It was not saved.
+- Focusing Finder returned `success_verified`.
+- Click, scroll, and key press were not run on the live Mac.
+
+An earlier smoke looked at the front app when TextEdit was not front. That read was not a typing action. The smoke test no longer prints control names.
+
+### Checks
+
+| Command | Result |
+|---|---|
+| `npm run typecheck` | Passed. |
+| `npm run lint` | Passed. |
+| `npm test` | Passed. 107 tests, 4 skipped. The extra skip is `tests/desktopSmoke.test.ts` unless `COMPANION_DESKTOP_SMOKE=1`. The other skips are unchanged. |
+| `npm run build` | Passed. Production bundle only. |
+| `npm run build:helper` | Passed. Release binary linked and ad-hoc signed. |
+| `COMPANION_DESKTOP_SMOKE=1 npx vitest run tests/desktopSmoke.test.ts` from `apps/desktop` | Passed. 1 test. See the live notes above. |
+
+### Phase 2 report
+
+**Implemented:** Native window list, focus, Accessibility observation, unique click, text entry, a navigation-key allowlist, and bounded scroll. Snapshot expiry, duplicate and disabled targets, protected windows, and abort-without-retry are covered by unit tests and a mock JSONL helper.  
+**Verified:** The commands above. On this Mac, TextEdit observation, typing into its text area, and focusing Finder.  
+**Not verified:** A live click, scroll, or key press. Saving the TextEdit note. A live Stop during a helper call. Screenshot capture, which remains Phase 3.  
+**Blockers:** None for a review of Phase 2.  
+**Next phase:** Phase 3 after approval. Do not start it in this session.

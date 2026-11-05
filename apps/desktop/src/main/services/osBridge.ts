@@ -5,10 +5,39 @@ import { join } from 'node:path'
 const requestLimit = 65_536
 const responseLimit = 1_000_000
 
+const helperMethods = new Set([
+  'system.ping',
+  'system.promptAccessibility',
+  'system.getForegroundWindow',
+  'ui.inspectForeground',
+  'ui.findElement',
+  'ui.readElementState',
+  'ui.invokeElement',
+  'screen.captureOnce',
+  'desktop.listWindows',
+  'desktop.focusWindow',
+  'desktop.observe',
+  'desktop.clickElement',
+  'desktop.setText',
+  'desktop.keyPress',
+  'desktop.scroll',
+  'desktop.cancel'
+])
+
+const oneShotMethods = new Set([
+  'ui.invokeElement',
+  'desktop.focusWindow',
+  'desktop.clickElement',
+  'desktop.setText',
+  'desktop.keyPress',
+  'desktop.scroll'
+])
+
 export class HelperCallError extends Error {
   constructor(
     readonly code: string,
-    message: string
+    message: string,
+    readonly dispatched = false
   ) {
     super(message)
     this.name = 'HelperCallError'
@@ -16,10 +45,23 @@ export class HelperCallError extends Error {
 }
 
 export class HelperUnavailable extends Error {
-  constructor(message = 'Some screen-help features are unavailable.') {
+  constructor(
+    message = 'Some screen-help features are unavailable.',
+    readonly dispatched = false
+  ) {
     super(message)
     this.name = 'HelperUnavailable'
   }
+}
+
+export function helperCallUnresolved(error: unknown): boolean {
+  if (error instanceof HelperCallError) {
+    return (
+      error.dispatched &&
+      (error.code === 'aborted' || error.code === 'timeout' || error.code === 'uncertain')
+    )
+  }
+  return error instanceof HelperUnavailable && error.dispatched
 }
 
 export interface OsBridge {
@@ -35,6 +77,7 @@ interface Pending {
   resolve: (value: unknown) => void
   reject: (error: Error) => void
   timer: ReturnType<typeof setTimeout>
+  dispatched: boolean
 }
 
 export function createMacOsBridge(options: { command: string; args?: string[] }): OsBridge {
@@ -48,9 +91,26 @@ export function createMacOsBridge(options: { command: string; args?: string[] })
   function failAll(error: Error): void {
     for (const entry of pending.values()) {
       clearTimeout(entry.timer)
-      entry.reject(error)
+      if (entry.dispatched && error instanceof HelperUnavailable) {
+        entry.reject(new HelperUnavailable(error.message, true))
+      } else {
+        entry.reject(error)
+      }
     }
     pending.clear()
+  }
+
+  function notifyCancel(requestId: string): void {
+    if (!child || crashed) {
+      return
+    }
+    const payload = JSON.stringify({
+      id: `req_${(nextId += 1)}`,
+      version: 1,
+      method: 'desktop.cancel',
+      params: { requestId }
+    })
+    child.stdin.write(`${payload}\n`, () => undefined)
   }
 
   function spawnChild(): ChildProcessWithoutNullStreams {
@@ -152,18 +212,27 @@ export function createMacOsBridge(options: { command: string; args?: string[] })
     const current = ensureChild()
     const id = JSON.parse(payload).id as string
     return new Promise((resolve, reject) => {
+      const state = { dispatched: false }
       const timer = setTimeout(() => {
+        const dispatched = pending.get(id)?.dispatched === true
         pending.delete(id)
-        reject(new HelperUnavailable('That took too long, so I stopped.'))
+        if (dispatched) {
+          notifyCancel(id)
+        }
+        reject(new HelperCallError('timeout', 'That took too long, so I stopped.', dispatched))
       }, timeoutMs)
       const onAbort = (): void => {
         clearTimeout(timer)
+        const dispatched = state.dispatched
         pending.delete(id)
-        reject(new HelperCallError('aborted', 'Screen access has stopped.'))
+        if (dispatched) {
+          notifyCancel(id)
+        }
+        reject(new HelperCallError('aborted', 'Screen access has stopped.', dispatched))
       }
       if (signal?.aborted) {
         clearTimeout(timer)
-        reject(new HelperCallError('aborted', 'Screen access has stopped.'))
+        reject(new HelperCallError('aborted', 'Screen access has stopped.', false))
         return
       }
       signal?.addEventListener('abort', onAbort, { once: true })
@@ -176,8 +245,14 @@ export function createMacOsBridge(options: { command: string; args?: string[] })
           signal?.removeEventListener('abort', onAbort)
           reject(error)
         },
-        timer
+        timer,
+        dispatched: false
       })
+      state.dispatched = true
+      const entry = pending.get(id)
+      if (entry) {
+        entry.dispatched = true
+      }
       current.stdin.write(`${payload}\n`, (error) => {
         if (error) {
           clearTimeout(timer)
@@ -192,14 +267,17 @@ export function createMacOsBridge(options: { command: string; args?: string[] })
 
   return {
     async request(method, params = {}, options = {}) {
+      if (!helperMethods.has(method)) {
+        throw new HelperCallError('unknown_method', 'That helper method is not available.')
+      }
       const timeoutMs = options.timeoutMs ?? 8_000
       try {
         const result = await send(method, params, timeoutMs, options.signal)
         retried = false
         return result
       } catch (error) {
-        const unavailable = error instanceof HelperUnavailable
-        if (!unavailable || retried) {
+        const crashed = error instanceof HelperUnavailable
+        if (!crashed || retried || oneShotMethods.has(method) || options.signal?.aborted) {
           throw error
         }
         retried = true

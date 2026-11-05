@@ -16,6 +16,7 @@ import { listFavorites, recordActivity } from '../storage/database'
 import type { CommandRunner } from './launcher'
 import type { PolicyApproval } from './policyEngine'
 import { AuthorizedToolExecutor } from '../agent/AuthorizedToolExecutor'
+import type { DesktopAutomationPort } from '../agent/ports/DesktopAutomationPort'
 import type { ReminderPort } from './reminderScheduler'
 import { AssistantPlanRejected } from '../providers/assistant'
 import {
@@ -69,6 +70,7 @@ export interface OrchestratorOptions {
   onTool?: (name: string) => void
   reminders?: ReminderPort
   screen?: ToolContext['screen']
+  desktop?: DesktopAutomationPort
   interpret?: (text: string) => Promise<RoutedRequest>
 }
 
@@ -498,7 +500,8 @@ export class TaskOrchestrator {
           .map((favorite) => favorite.target),
       signal,
       reminders: this.options.reminders,
-      screen: this.options.screen
+      screen: this.options.screen,
+      desktop: this.options.desktop
     }
   }
 
