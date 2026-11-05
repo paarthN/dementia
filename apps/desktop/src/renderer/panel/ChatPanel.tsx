@@ -1,21 +1,34 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SessionSnapshot } from '../../shared/session'
-import { browserSpeechAvailable, micLabel, micStatus } from '../../shared/voice'
 
 const suggestions = [
   'Open TextEdit',
+  'Where is File?',
   'Search for gardening tips',
-  'Make your text bigger',
   'Explain this screen'
 ]
 
 interface BrowserSpeech {
   lang: string
+  continuous: boolean
+  interimResults: boolean
   onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null
-  onerror: (() => void) | null
+  onerror: ((event: { error?: string }) => void) | null
+  onend: (() => void) | null
   start: () => void
   stop: () => void
   abort: () => void
+}
+
+function transcriptFrom(results: ArrayLike<ArrayLike<{ transcript: string }>>): string {
+  const parts: string[] = []
+  for (let index = 0; index < results.length; index += 1) {
+    const piece = results[index]?.[0]?.transcript ?? ''
+    if (piece.trim()) {
+      parts.push(piece.trim())
+    }
+  }
+  return parts.join(' ').trim()
 }
 
 function speechHost(): Window & {
@@ -53,16 +66,16 @@ export function ChatPanel({
   onDraftChange: (value: string) => void
   onListeningChange: (listening: boolean) => void
 }): React.JSX.Element {
-  const [mode, setMode] = useState<'execute' | 'guide'>('execute')
   const [sending, setSending] = useState(false)
   const [listening, setListening] = useState(false)
-  const [recognizerAvailable] = useState(() => browserSpeechAvailable(speechHost()))
+  const [voiceNote, setVoiceNote] = useState<string | null>(null)
   const recognizer = useRef<BrowserSpeech | null>(null)
+  const wantListen = useRef(false)
+  const spoken = useRef('')
   const sendingRef = useRef(false)
   const spokenId = useRef<string | null>(null)
   const latest = session.messages.at(-1)
   const task = session.activeTask
-  const microphone = micStatus(session.preferences.voice.enabled, listening, recognizerAvailable)
 
   async function send(text = draft): Promise<void> {
     if (sendingRef.current) {
@@ -71,7 +84,7 @@ export function ChatPanel({
     sendingRef.current = true
     setSending(true)
     try {
-      await window.companion.submitChat({ text, mode })
+      await window.companion.submitChat({ text, mode: 'execute' })
       if (text.trim()) {
         onDraftChange('')
       }
@@ -83,6 +96,7 @@ export function ChatPanel({
 
   useEffect(() => {
     return () => {
+      wantListen.current = false
       try {
         recognizer.current?.stop()
       } catch {
@@ -105,87 +119,130 @@ export function ChatPanel({
     window.speechSynthesis.speak(new SpeechSynthesisUtterance(latest.text))
   }, [latest, session.preferences.voice.readRepliesAloud])
 
-  function beginListening(): void {
-    if (!session.preferences.voice.enabled || listening) {
-      return
-    }
+  function beginListening(seed: string): void {
     const Ctor = speechCtor()
     if (!Ctor) {
+      setVoiceNote('Speech to text is not available. You can type instead.')
       return
     }
     const next = new Ctor()
+    spoken.current = seed.trim()
+    let sessionText = ''
     next.lang = session.preferences.voice.language
+    next.continuous = true
+    next.interimResults = true
     next.onresult = (event) => {
-      const transcript = event.results[0]?.[0]?.transcript ?? ''
-      if (transcript.trim()) {
-        onDraftChange(transcript)
+      sessionText = transcriptFrom(event.results)
+      const combined = [spoken.current, sessionText].filter(Boolean).join(' ').trim()
+      onDraftChange(combined)
+    }
+    next.onerror = (event) => {
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        wantListen.current = false
+        setListening(false)
+        onListeningChange(false)
+        setVoiceNote(
+          'The microphone is blocked. Allow it in System Settings, then click Listen again.'
+        )
       }
     }
-    next.onerror = () => {
-      setListening(false)
-      onListeningChange(false)
+    next.onend = () => {
+      if (sessionText) {
+        spoken.current = [spoken.current, sessionText].filter(Boolean).join(' ').trim()
+        sessionText = ''
+      }
+      if (!wantListen.current) {
+        return
+      }
+      try {
+        next.start()
+      } catch {
+        wantListen.current = false
+        setListening(false)
+        onListeningChange(false)
+      }
     }
+    wantListen.current = true
+    recognizer.current = next
     try {
       next.start()
     } catch {
+      wantListen.current = false
+      recognizer.current = null
       setListening(false)
       onListeningChange(false)
+      setVoiceNote('The microphone did not start. You can type instead.')
       return
     }
-    recognizer.current = next
     setListening(true)
     onListeningChange(true)
   }
 
   function endListening(): void {
+    wantListen.current = false
     const current = recognizer.current
     recognizer.current = null
     try {
       current?.stop()
     } catch {
-      // Releasing the button after recognition already ended is normal.
+      // Stopping after recognition already ended is normal.
     }
     setListening(false)
     onListeningChange(false)
   }
 
+  async function toggleListening(): Promise<void> {
+    if (listening) {
+      endListening()
+      return
+    }
+    setVoiceNote(null)
+    await window.companion.requestSystemPermissions({})
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      for (const track of stream.getTracks()) {
+        track.stop()
+      }
+    } catch (error) {
+      const blocked = error instanceof DOMException && error.name === 'NotAllowedError'
+      setVoiceNote(
+        blocked
+          ? 'The microphone is blocked. Allow it in System Settings, then click Listen again.'
+          : 'The microphone is not available. You can type instead.'
+      )
+      if (blocked) {
+        await window.companion.requestSystemPermissions({ openSettings: true })
+      }
+      return
+    }
+    if (!session.preferences.voice.enabled) {
+      await window.companion.setVoice({
+        enabled: true,
+        readRepliesAloud: session.preferences.voice.readRepliesAloud
+      })
+    }
+    beginListening(draft)
+  }
+
   return (
     <div className="chat">
-      <div className="mode-row" role="group" aria-label="How Companion should help">
-        <button
-          type="button"
-          className="icon-button"
-          aria-pressed={mode === 'execute'}
-          onClick={() => setMode('execute')}
-        >
-          Do it for me
-        </button>
-        <button
-          type="button"
-          className="icon-button"
-          aria-pressed={mode === 'guide'}
-          onClick={() => setMode('guide')}
-        >
-          Show me how
-        </button>
-      </div>
-      <p className="muted">
-        {session.screen.captureActive
-          ? 'Your screen is being used for this request.'
-          : `Screen access: ${session.screen.access === 'on' ? 'On' : 'Off'}. ${micLabel(microphone)}.`}
-      </p>
       {session.screen.captureActive ? (
-        <button
-          type="button"
-          className="icon-button"
-          onClick={() => void window.companion.stopSharing()}
-        >
-          Stop sharing
-        </button>
+        <div className="guide-bar">
+          <p>Your screen is being used for this request.</p>
+          <button
+            type="button"
+            className="quiet"
+            onClick={() => void window.companion.stopSharing()}
+          >
+            Stop sharing
+          </button>
+        </div>
       ) : null}
       <div className="feed" aria-live="polite">
         {session.messages.length === 0 ? (
-          <p>Ask me to open an app, search the web, or make this text bigger.</p>
+          <p className="lede">
+            Ask Companion to open an app, explain this screen, or set a reminder.
+          </p>
         ) : null}
         {session.messages.map((message) => (
           <article key={message.id} className={`bubble ${message.role}`}>
@@ -195,7 +252,7 @@ export function ChatPanel({
               <button
                 key={action.actionKey}
                 type="button"
-                className="icon-button"
+                className="quiet"
                 onClick={() => void window.companion.recoverChat(action.actionKey)}
               >
                 {action.label}
@@ -203,7 +260,7 @@ export function ChatPanel({
             ))}
             <button
               type="button"
-              className="icon-button"
+              className="quiet"
               onClick={() =>
                 void navigator.clipboard.writeText(message.text).catch(() => undefined)
               }
@@ -230,7 +287,7 @@ export function ChatPanel({
           </button>
           <button
             type="button"
-            className="icon-button"
+            className="quiet"
             onClick={() => {
               const previous = [...session.messages]
                 .reverse()
@@ -245,7 +302,7 @@ export function ChatPanel({
           </button>
           <button
             type="button"
-            className="icon-button"
+            className="quiet"
             onClick={() => void window.companion.cancelChat(session.pendingApproval?.taskId ?? '')}
           >
             Cancel
@@ -254,7 +311,7 @@ export function ChatPanel({
       ) : null}
       {task && task.state === 'awaiting_permission' ? (
         <section className="bubble" aria-label="Screen access">
-          <p>I need permission to look at this screen so I can explain it.</p>
+          <p>Allow screen access and I will look at the other app.</p>
           <button
             type="button"
             className="primary"
@@ -264,58 +321,43 @@ export function ChatPanel({
           </button>
           <button
             type="button"
-            className="icon-button"
+            className="quiet"
             onClick={() => void window.companion.cancelChat(task.id)}
           >
             Not now
           </button>
         </section>
       ) : null}
-      {session.guide && session.guide.status !== 'stopped' ? (
-        <section className="bubble" aria-label="Guide">
-          <p>{session.guide.stepLabel}</p>
+      {session.guide?.status === 'showing' && session.guide.highlight ? (
+        <div className="guide-bar">
           <p>{session.guide.instruction}</p>
+          {session.guide.targetName ? (
+            <button
+              type="button"
+              className="primary"
+              onClick={() => void window.companion.guideAction('press')}
+            >
+              {`Press ${session.guide.targetName}`}
+            </button>
+          ) : null}
           <button
             type="button"
-            className="primary"
-            onClick={() => void window.companion.guideAction('did_it')}
-          >
-            I did it
-          </button>
-          <button
-            type="button"
-            className="icon-button"
-            onClick={() => void window.companion.guideAction('repeat')}
-          >
-            Repeat
-          </button>
-          <button
-            type="button"
-            className="icon-button"
-            onClick={() => void window.companion.guideAction('cant_find')}
-          >
-            {"Can't find it"}
-          </button>
-          <button
-            type="button"
-            className="icon-button"
-            onClick={() => void window.companion.guideAction('manual')}
-          >
-            Switch to manual
-          </button>
-          <button
-            type="button"
-            className="icon-button"
+            className="quiet"
             onClick={() => void window.companion.guideAction('stop')}
           >
             Stop
           </button>
-        </section>
+        </div>
+      ) : null}
+      {session.notice ? (
+        <p className="toast" role="status">
+          {session.notice}
+        </p>
       ) : null}
       {task && stoppable.has(task.state) ? (
         <button
           type="button"
-          className="icon-button"
+          className="quiet"
           onClick={() => void window.companion.cancelChat(task.id)}
         >
           Stop
@@ -326,7 +368,7 @@ export function ChatPanel({
           <button
             key={suggestion}
             type="button"
-            className="icon-button"
+            className="quiet"
             disabled={sending}
             onClick={() => void send(suggestion)}
           >
@@ -341,47 +383,39 @@ export function ChatPanel({
           void send()
         }}
       >
-        <label htmlFor="chat-message">Message</label>
         <textarea
           id="chat-message"
+          aria-label="Message"
           value={draft}
+          placeholder="Ask Companion"
           onChange={(event) => onDraftChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              void send()
+            }
+          }}
           rows={3}
         />
-        <button type="submit" className="primary" disabled={sending}>
-          {sending ? 'Sending' : 'Send'}
-        </button>
-        <button
-          type="button"
-          className="icon-button"
-          aria-pressed={listening}
-          disabled={!session.preferences.voice.enabled}
-          onPointerDown={(event) => {
-            event.preventDefault()
-            event.currentTarget.setPointerCapture(event.pointerId)
-            beginListening()
-          }}
-          onPointerUp={() => endListening()}
-          onPointerCancel={() => endListening()}
-          onKeyDown={(event) => {
-            if (event.key === ' ' && !event.repeat) {
-              event.preventDefault()
-              beginListening()
-            }
-          }}
-          onKeyUp={(event) => {
-            if (event.key === ' ') {
-              event.preventDefault()
-              endListening()
-            }
-          }}
-        >
-          {listening ? 'Listening now' : 'Hold to talk'}
-        </button>
+        <div className="composer-actions">
+          <button
+            type="button"
+            className="listen"
+            aria-pressed={listening}
+            onClick={() => void toggleListening()}
+          >
+            {listening ? 'Stop' : 'Listen'}
+          </button>
+          <button type="submit" className="primary" disabled={sending}>
+            {sending ? 'Sending' : 'Send'}
+          </button>
+        </div>
       </form>
-      <p className="muted" role="status">
-        {latest ? latest.text : 'Ready'}
-      </p>
+      {listening || voiceNote ? (
+        <p className="status-line" role="status">
+          {listening ? 'Listening. Click Stop to end.' : voiceNote}
+        </p>
+      ) : null}
     </div>
   )
 }

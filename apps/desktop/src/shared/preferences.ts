@@ -118,7 +118,7 @@ export function nextTextScale(current: TextScale): TextScale {
 }
 
 export const textScalePixels: Record<TextScale, number> = {
-  comfortable: 20,
-  large: 23,
-  'extra-large': 27
+  comfortable: 15,
+  large: 18,
+  'extra-large': 22
 }

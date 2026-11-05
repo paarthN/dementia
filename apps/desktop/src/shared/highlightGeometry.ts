@@ -98,6 +98,32 @@ export function applyGuidanceOverlayBehavior(target: {
   target.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
 }
 
+export function placeCallout(
+  box: { x: number; y: number; width: number; height: number },
+  bounds: { width: number; height: number },
+  card: { width: number; height: number }
+): { x: number; y: number } {
+  const gap = 12
+  const candidates = [
+    { x: box.x + box.width + gap, y: box.y },
+    { x: box.x - card.width - gap, y: box.y },
+    { x: box.x, y: box.y + box.height + gap },
+    { x: box.x, y: box.y - card.height - gap }
+  ]
+  const fits = (point: { x: number; y: number }): boolean =>
+    point.x >= 0 &&
+    point.y >= 0 &&
+    point.x + card.width <= bounds.width &&
+    point.y + card.height <= bounds.height
+  const chosen = candidates.find(fits) ?? { x: box.x, y: box.y }
+  const maxX = Math.max(0, bounds.width - card.width)
+  const maxY = Math.max(0, bounds.height - card.height)
+  return {
+    x: Math.min(Math.max(chosen.x, 0), maxX),
+    y: Math.min(Math.max(chosen.y, 0), maxY)
+  }
+}
+
 export function overlayPlacements(
   highlight: PlacedHighlight | null,
   displays: DisplaySpace[]

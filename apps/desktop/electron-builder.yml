@@ -24,6 +24,9 @@ nsis:
 mac:
   entitlementsInherit: entitlements/entitlements.mac.plist
   notarize: false
+  extendInfo:
+    NSMicrophoneUsageDescription: Companion uses the microphone when you click Listen.
+    NSScreenCaptureUsageDescription: Companion looks at your screen when you allow it, so it can explain what is on screen.
 dmg:
   artifactName: ${name}-${version}.${ext}
 linux:

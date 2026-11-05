@@ -1,6 +1,17 @@
 import { assistantIntents, assistantModes, routedRequestSchema, type RoutedRequest } from './agent'
 
-const forbiddenKeys = new Set(['shell', 'command', 'argv', 'exec', 'cmd', 'script', 'tool'])
+const forbiddenKeys = new Set([
+  'shell',
+  'command',
+  'argv',
+  'exec',
+  'cmd',
+  'script',
+  'tool',
+  'x',
+  'y',
+  'coordinates'
+])
 const shellValue = /^\s*(sudo|rm|curl|bash|sh|osascript|python|node)\b/i
 
 export function assistantOrigin(value: string): string | null {

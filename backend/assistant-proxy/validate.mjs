@@ -9,6 +9,7 @@ const intents = new Set([
   "open_system_settings",
   "explain_screen",
   "guide_task",
+  "press_control",
   "general_question",
   "unsupported",
 ]);
@@ -22,6 +23,9 @@ const forbiddenKeys = new Set([
   "cmd",
   "script",
   "tool",
+  "x",
+  "y",
+  "coordinates",
 ]);
 const shellValue = /^\s*(sudo|rm|curl|bash|sh|osascript|python|node)\b/i;
 

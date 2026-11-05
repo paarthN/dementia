@@ -76,6 +76,12 @@ const ipcSchemas = {
   [companionIpcChannels.completeReminder]: z.object({ id: z.string().min(1) }).strict(),
   [companionIpcChannels.setReminderNotifications]: z.object({ enabled: z.boolean() }).strict(),
   [companionIpcChannels.setScreenAccess]: z.object({ enabled: z.boolean() }).strict(),
+  [companionIpcChannels.requestSystemPermissions]: z
+    .object({
+      openSettings: z.boolean().optional(),
+      resumeScreen: z.boolean().optional()
+    })
+    .strict(),
   [companionIpcChannels.stopSharing]: emptyArgsSchema,
   [companionIpcChannels.setDeveloperInspection]: z.object({ enabled: z.boolean() }).strict(),
   [companionIpcChannels.setVoice]: z
@@ -89,7 +95,7 @@ const ipcSchemas = {
     })
     .strict(),
   [companionIpcChannels.guideAction]: z
-    .object({ action: z.enum(['did_it', 'repeat', 'cant_find', 'manual', 'stop']) })
+    .object({ action: z.enum(['did_it', 'repeat', 'cant_find', 'manual', 'stop', 'press']) })
     .strict()
 } satisfies Record<CompanionIpcChannel, z.ZodType>
 

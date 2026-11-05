@@ -23,6 +23,17 @@ export async function launchBundle(
   return { status: 'succeeded', summary: 'The app is open.' }
 }
 
+export async function launchAppByName(
+  name: string,
+  run: CommandRunner = spawnCommand
+): Promise<ActionResult> {
+  const code = await run('/usr/bin/open', ['-a', name])
+  if (code !== 0) {
+    return { status: 'failed', summary: "I couldn't find that app on this computer." }
+  }
+  return { status: 'succeeded', summary: 'The app is open.' }
+}
+
 export async function launchWebsite(
   url: string,
   run: CommandRunner = spawnCommand

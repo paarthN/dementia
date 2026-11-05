@@ -1,12 +1,18 @@
 import type { DatabaseSync } from 'node:sqlite'
 import type { RiskLevel, ToolResult } from '../../shared/agent'
 import { isBundleId, parseWebsite } from '../../shared/favorites'
-import { isKnownBundle, isVettedHostname } from '../../shared/knownTargets'
+import { appLaunchName, isKnownBundle, isVettedHostname } from '../../shared/knownTargets'
 import { nextTextScale, type UserPreferences } from '../../shared/preferences'
 import { browserSearchUrl } from '../../shared/search'
 import { systemSettingsSections, type SystemSettingsSection } from '../../shared/systemSettings'
 import { loadPreferences, savePreferences } from '../storage/database'
-import { launchBundle, launchSystemSettings, launchWebsite, type CommandRunner } from './launcher'
+import {
+  launchAppByName,
+  launchBundle,
+  launchSystemSettings,
+  launchWebsite,
+  type CommandRunner
+} from './launcher'
 import type { ReminderPort } from './reminderScheduler'
 
 export const blockedToolNames = [
@@ -41,6 +47,16 @@ export interface ToolContext {
     inspect: () => Promise<ToolResult>
     captureOnce: (explicitConsent: boolean) => Promise<ToolResult>
     startGuide: (guideId: string) => Promise<ToolResult>
+    point?: (name: string, role?: string) => Promise<ToolResult>
+    describeControl?: (input: { name: string; role?: string }) => Promise<{
+      matchCount: number
+      summary: string
+      name?: string
+      role?: string
+      appName?: string
+      blocked?: boolean
+    }>
+    press?: (input: { name: string; role?: string; text?: string }) => Promise<ToolResult>
   }
 }
 
@@ -197,6 +213,41 @@ function builtinTools(): ToolDefinition[] {
       }
     },
     {
+      name: 'guidance.point',
+      risk: 'R0',
+      async execute(input, context) {
+        if (!context.screen?.point) {
+          return {
+            status: 'unsupported',
+            summary: "I can't highlight the screen yet.",
+            errorCode: 'unavailable',
+            verification: { method: 'none', passed: false }
+          }
+        }
+        const name = typeof input.name === 'string' ? input.name : ''
+        const role = typeof input.role === 'string' ? input.role : undefined
+        return context.screen.point(name, role)
+      }
+    },
+    {
+      name: 'ui.press',
+      risk: 'R2',
+      async execute(input, context) {
+        if (!context.screen?.press) {
+          return {
+            status: 'unsupported',
+            summary: "I can't press controls yet.",
+            errorCode: 'unavailable',
+            verification: { method: 'none', passed: false }
+          }
+        }
+        const name = typeof input.name === 'string' ? input.name : ''
+        const role = typeof input.role === 'string' ? input.role : undefined
+        const text = typeof input.text === 'string' ? input.text : undefined
+        return context.screen.press({ name, ...(role ? { role } : {}), ...(text ? { text } : {}) })
+      }
+    },
+    {
       name: 'tasks.cancel',
       risk: 'R0',
       async execute() {
@@ -234,33 +285,45 @@ function builtinTools(): ToolDefinition[] {
   ]
 }
 
+function missedApp(displayName: string): ToolResult {
+  return {
+    status: 'failed',
+    summary: `I couldn't find ${displayName} on this computer.`,
+    errorCode: 'app_not_found',
+    recovery: [{ label: 'Show me how', actionKey: 'guide_app' }],
+    verification: { method: 'os', passed: false }
+  }
+}
+
 async function openApp(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
-  const displayName = typeof input.displayName === 'string' ? input.displayName : 'That app'
+  const provided = typeof input.displayName === 'string' ? input.displayName : ''
+  const displayName = provided.trim() || 'That app'
   const bundleId = typeof input.bundleId === 'string' ? input.bundleId : ''
   const allowed = new Set(context.allowedBundleIds())
-  if (!bundleId || !isBundleId(bundleId) || (!isKnownBundle(bundleId) && !allowed.has(bundleId))) {
+  if (bundleId && isBundleId(bundleId) && (isKnownBundle(bundleId) || allowed.has(bundleId))) {
+    const opened = await launchBundle(bundleId, context.run)
+    if (opened.status !== 'succeeded') {
+      return missedApp(displayName)
+    }
     return {
-      status: 'failed',
-      summary: `I couldn't find ${displayName} on this computer.`,
-      errorCode: 'app_not_found',
-      recovery: [{ label: 'Show me how', actionKey: 'guide_app' }],
-      verification: { method: 'os', passed: false }
+      status: 'succeeded',
+      summary: `${displayName} is open.`,
+      verification: { method: 'os', passed: true, details: bundleId }
     }
   }
-  const opened = await launchBundle(bundleId, context.run)
+
+  const appName = appLaunchName(provided)
+  if (!appName) {
+    return missedApp(displayName)
+  }
+  const opened = await launchAppByName(appName, context.run)
   if (opened.status !== 'succeeded') {
-    return {
-      status: 'failed',
-      summary: `I couldn't find ${displayName} on this computer.`,
-      errorCode: 'app_not_found',
-      recovery: [{ label: 'Show me how', actionKey: 'guide_app' }],
-      verification: { method: 'os', passed: false }
-    }
+    return missedApp(appName)
   }
   return {
     status: 'succeeded',
-    summary: `${displayName} is open.`,
-    verification: { method: 'os', passed: true, details: bundleId }
+    summary: `${appName} is open.`,
+    verification: { method: 'os', passed: true, details: appName }
   }
 }
 

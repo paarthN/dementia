@@ -63,6 +63,10 @@ export function createCompanionApi(invoke: Invoker): {
   completeReminder: (id: string) => Promise<SessionSnapshot>
   setReminderNotifications: (enabled: boolean) => Promise<SessionSnapshot>
   setScreenAccess: (enabled: boolean) => Promise<SessionSnapshot>
+  requestSystemPermissions: (input?: {
+    openSettings?: boolean
+    resumeScreen?: boolean
+  }) => Promise<SessionSnapshot>
   stopSharing: () => Promise<SessionSnapshot>
   setDeveloperInspection: (enabled: boolean) => Promise<SessionSnapshot>
   setVoice: (input: { enabled: boolean; readRepliesAloud: boolean }) => Promise<SessionSnapshot>
@@ -72,7 +76,7 @@ export function createCompanionApi(invoke: Invoker): {
     consent?: boolean
   }) => Promise<SessionSnapshot>
   guideAction: (
-    action: 'did_it' | 'repeat' | 'cant_find' | 'manual' | 'stop'
+    action: 'did_it' | 'repeat' | 'cant_find' | 'manual' | 'stop' | 'press'
   ) => Promise<SessionSnapshot>
 } {
   return {
@@ -128,6 +132,11 @@ export function createCompanionApi(invoke: Invoker): {
       }) as Promise<SessionSnapshot>,
     setScreenAccess: (enabled) =>
       invoke(companionIpcChannels.setScreenAccess, { enabled }) as Promise<SessionSnapshot>,
+    requestSystemPermissions: (input) =>
+      invoke(
+        companionIpcChannels.requestSystemPermissions,
+        input ?? {}
+      ) as Promise<SessionSnapshot>,
     stopSharing: () => invoke(companionIpcChannels.stopSharing, {}) as Promise<SessionSnapshot>,
     setDeveloperInspection: (enabled) =>
       invoke(companionIpcChannels.setDeveloperInspection, {

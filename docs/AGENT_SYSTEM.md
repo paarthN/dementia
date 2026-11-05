@@ -41,6 +41,7 @@ type AssistantIntent =
   | 'open_system_settings'
   | 'explain_screen'
   | 'guide_task'
+  | 'press_control'
   | 'general_question'
   | 'unsupported';
 
@@ -59,6 +60,7 @@ Use ordinary parsing for deterministic commands. Use the model to interpret ambi
 | User says | Intent | Behavior |
 |---|---|---|
 | “Open TextEdit” | `open_app` | Resolve the bundle ID and launch |
+| “Open Firefox” | `open_app` | Ask macOS to open that installed app by name |
 | “Go to YouTube” | `open_website` | Open the validated official site |
 | “Find videos about rose gardening” | `search_web` | Encode the query and open the browser |
 | “Remind me to call Jim tomorrow at four” | `set_reminder` | Resolve local date and time, then confirm |
@@ -67,6 +69,8 @@ Use ordinary parsing for deterministic commands. Use the model to interpret ambi
 | “Make everything on my Mac bigger” | `open_system_settings` | Open Displays in System Settings |
 | “What's this dialog?” | `explain_screen` | Permissioned inspection and explanation |
 | “Show me where to click to save this” | `guide_task` | Inspect, highlight only if grounded |
+| “Show me Save” / “Where is File?” | `guide_task` | Find that control by name and role, then ring it |
+| “Click Save” / “Do it for me” | `press_control` | Preview the named control, then press it |
 | “Can you transfer money for me?” | `unsupported` | Do not execute; offer general guidance |
 
 ### Clarification
@@ -137,6 +141,8 @@ A tool that returns `succeeded` without having run must fail a test.
 | `screen.inspect` | scope | Reads UI metadata | Only inside the visible permission policy | Snapshot exists |
 | `screen.captureOnce` | scope | Captures screen data | Explicit per-session consent | A frame was received |
 | `guidance.start` | supported guideId | Draws an overlay | Screen permission required | Target re-resolved |
+| `guidance.point` | control name, optional role | Rings that control | Screen permission required | One live match by name and role |
+| `ui.press` | control name, optional role, optional text | Presses or types into that control | Preview, then confirm | Re-found by name and role immediately before the press |
 | `tasks.cancel` | taskId | Cancels planned work | No | Task state is cancelled |
 
 Do not register generic tools such as `executeShell`, `runShell`, `clickCoordinates`, `readAnyFile`, or `sendAnyHttpRequest`.
@@ -149,7 +155,7 @@ Risk is coded from the tool and the exact operation. The model does not assign t
 |---|---|---|
 | R0 — Read-only | Explain a screen, list favorites, read reminders | Run when permission is already granted |
 | R1 — Low-risk reversible | Open an app, search, change Companion appearance | Run, then show the result and undo where it exists |
-| R2 — Moderate | Create a calendar event, change an OS setting, submit a non-sensitive form | Preview and require explicit approval once integrated |
+| R2 — Moderate | Press a named control, create a calendar event, change an OS setting, submit a non-sensitive form | Preview and require explicit approval |
 | R3 — High | Send email or text, purchase, delete files, change account permissions | Precise, contextual approval. Some of these stay out of scope |
 | R4 — Disallowed | Transfer money, enter credentials, bypass a security prompt, broad destructive automation | Refuse automatic execution and give safe guidance |
 

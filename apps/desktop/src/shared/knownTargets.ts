@@ -57,6 +57,40 @@ export function isKnownBundle(bundleId: string): boolean {
   return bundleIds.has(bundleId)
 }
 
+const appNamePattern = /^[\p{L}\p{N}][\p{L}\p{N} .+'’&_-]{0,79}$/u
+
+const spokenAppNames: Record<string, string> = {
+  chrome: 'Google Chrome',
+  'google chrome': 'Google Chrome',
+  brave: 'Brave Browser',
+  edge: 'Microsoft Edge',
+  'microsoft edge': 'Microsoft Edge',
+  code: 'Visual Studio Code',
+  'vs code': 'Visual Studio Code',
+  vscode: 'Visual Studio Code'
+}
+
+export function appLaunchName(value: string): string | null {
+  const name = value
+    .trim()
+    .replace(/[.?!]+$/, '')
+    .replace(/\s+/g, ' ')
+    .replace(/\.app$/i, '')
+    .replace(/^the\s+/i, '')
+    .trim()
+  if (
+    !name ||
+    name.length > 80 ||
+    name.includes('..') ||
+    name.includes('/') ||
+    name.includes('\\') ||
+    !appNamePattern.test(name)
+  ) {
+    return null
+  }
+  return spokenAppNames[name.toLowerCase()] ?? name
+}
+
 export function isVettedHostname(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/\.$/, '')
   return vettedSites.some((site) => {

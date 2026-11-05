@@ -3,10 +3,12 @@ import { pathToFileURL } from "node:url";
 import { acceptPlan, readModelContent } from "./validate.mjs";
 
 const systemPrompt = `Translate one user sentence into JSON.
-Use only these intents: open_app, open_website, search_web, set_reminder, list_reminders, cancel_reminder, change_companion_visuals, open_system_settings, explain_screen, guide_task, general_question, unsupported.
+Use only these intents: open_app, open_website, search_web, set_reminder, list_reminders, cancel_reminder, change_companion_visuals, open_system_settings, explain_screen, guide_task, press_control, general_question, unsupported.
 Use mode execute, guide, explain, or answer.
 Return an object with intent, mode, parameters, missingRequiredFields, and requiresScreenContext.
-Do not return a shell command, a script, or a tool name.`;
+To point at a control, use guide_task with parameters.name and an optional parameters.role.
+To press a control, use press_control with parameters.name and an optional parameters.role.
+Do not return a shell command, a script, a tool name, or x, y, or coordinates.`;
 
 export function startProxy(options = {}) {
   const key = options.apiKey ?? process.env.ASSISTANT_API_KEY ?? "";

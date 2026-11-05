@@ -37,7 +37,7 @@ export function SettingsPanel({
           <button
             key={scale}
             type="button"
-            className="icon-button"
+            className="quiet"
             aria-pressed={appearance.textScale === scale}
             onClick={() => patch({ textScale: scale })}
           >
@@ -61,7 +61,7 @@ export function SettingsPanel({
           <button
             key={theme}
             type="button"
-            className="icon-button"
+            className="quiet"
             aria-pressed={appearance.theme === theme}
             onClick={() => patch({ theme })}
           >
@@ -75,7 +75,7 @@ export function SettingsPanel({
           <button
             key={color}
             type="button"
-            className="icon-button"
+            className="quiet"
             aria-pressed={appearance.mascotColorId === color}
             onClick={() => patch({ mascotColorId: color, accentColorId: color })}
           >
@@ -136,7 +136,7 @@ export function SettingsPanel({
             })
           }
         />
-        Allow push-to-talk
+        Use the microphone
       </label>
       <label className="choice-row">
         <input
@@ -152,9 +152,9 @@ export function SettingsPanel({
         Read replies aloud
       </label>
       <p className="muted">
-        Hold the microphone button in Chat to dictate. The words land in the message box so you can
-        edit them before sending. Companion does not save the recording. Typed chat keeps working if
-        the microphone is off or unavailable.
+        Click Listen in Chat to start the microphone, then click Stop. The words land in the message
+        box so you can edit them before sending. Companion does not save the recording. You can type
+        if the microphone is off or unavailable.
       </p>
       <h2>Cloud assistant</h2>
       <CloudAssistant session={session} onNotice={onNotice} />

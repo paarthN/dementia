@@ -7,6 +7,7 @@ import {
   nativeImage,
   Notification,
   screen,
+  shell,
   Tray
 } from 'electron'
 import type { DatabaseSync } from 'node:sqlite'
@@ -36,6 +37,7 @@ import {
   applyGuidanceOverlayBehavior,
   guidanceOverlayWindowOptions
 } from '../shared/highlightGeometry'
+import { panelChrome, privacySettingsUrl } from '../shared/systemPermissions'
 import type { SystemSettingsSection } from '../shared/systemSettings'
 import {
   deleteFavorite,
@@ -58,6 +60,7 @@ import {
   type ReminderNotice
 } from './services/reminderScheduler'
 import { readCapabilities } from './services/capabilities'
+import { promptSystemMedia } from './services/systemPermissions'
 import { createScreenCoordinator } from './services/screenCoordinator'
 import {
   createClosedOsBridge,
@@ -79,6 +82,8 @@ export class Desktop {
   private tray: Tray | null = null
   private panelView: PanelView = 'home'
   private shortcutWarning: string | null = null
+  private notice: string | null = null
+  private noticeTimer: ReturnType<typeof setTimeout> | null = null
   private loginItemTouched = false
   private messages: ChatMessage[] = []
   private activeTask: ActiveTaskView | null = null
@@ -86,6 +91,8 @@ export class Desktop {
   private dueReminders: DueReminder[] = []
   private helperRunning = false
   private pendingScreenText: string | null = null
+  private screenShareStopped = false
+  private accessibilityPrompted = false
   private readonly scheduler: ReturnType<typeof createReminderScheduler>
   private readonly bridge: OsBridge
   private readonly remote: ReturnType<typeof createRemoteAssistant>
@@ -138,23 +145,31 @@ export class Desktop {
   }
 
   private interpret(text: string): Promise<RoutedRequest> {
+    const guide = this.screenHelp.currentGuide()
+    const pointed =
+      guide && guide.status === 'showing' && guide.targetName
+        ? { name: guide.targetName, role: guide.targetRole, appName: guide.appName }
+        : undefined
+    const local = routeUtterance(text, {
+      favorites: listFavorites(this.db).map((favorite) => ({
+        kind: favorite.kind,
+        title: favorite.title,
+        target: favorite.target
+      })),
+      now: new Date(),
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      pointed
+    })
     const preferences = loadPreferences(this.db)
     const cloud =
       preferences.privacy.assistantMode === 'cloud' &&
       preferences.privacy.cloudConsentAtUtc &&
       preferences.privacy.assistantOrigin
-    if (!cloud || !preferences.privacy.assistantOrigin) {
-      return Promise.resolve(
-        routeUtterance(text, {
-          favorites: listFavorites(this.db).map((favorite) => ({
-            kind: favorite.kind,
-            title: favorite.title,
-            target: favorite.target
-          })),
-          now: new Date(),
-          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
-        })
-      )
+    const resolvedHere =
+      local.intent === 'press_control' ||
+      (local.intent === 'guide_task' && typeof local.parameters.name === 'string')
+    if (!cloud || !preferences.privacy.assistantOrigin || resolvedHere) {
+      return Promise.resolve(local)
     }
     return this.remote.interpret(text)
   }
@@ -174,9 +189,7 @@ export class Desktop {
     this.createTray()
     const missed = this.scheduler.start()
     this.showMascot()
-    if (missed.length > 0) {
-      this.openPanel('home')
-    }
+    this.openPanel(missed.length > 0 ? 'home' : 'chat')
     screen.on('display-removed', () => this.placeMascot())
     screen.on('display-metrics-changed', () => this.placeMascot())
   }
@@ -191,6 +204,7 @@ export class Desktop {
       activeTask: this.activeTask,
       pendingApproval: this.pendingApproval,
       shortcutWarning: this.shortcutWarning,
+      notice: this.notice,
       panelView: this.panelView,
       screen: {
         access: this.screenHelp.status().access,
@@ -407,25 +421,13 @@ export class Desktop {
       this.publish()
       return this.snapshot()
     }
-    const pausedPanel =
-      mode === 'guide' && this.panelWindow !== null && !this.panelWindow.isDestroyed()
-    if (pausedPanel) {
-      this.panelWindow?.hide()
-      await new Promise((resolve) => setTimeout(resolve, 200))
+    const outcome = await this.orchestrator.submit(text, { mode })
+    if (outcome.responseState === 'needs_permission') {
+      this.pendingScreenText = trimmed || null
     }
-    try {
-      const outcome = await this.orchestrator.submit(text, { mode })
-      if (outcome.responseState === 'needs_permission') {
-        this.pendingScreenText = trimmed || null
-      }
-      this.remember(outcome)
-      this.publish()
-      return this.snapshot()
-    } finally {
-      if (pausedPanel && this.panelWindow && !this.panelWindow.isDestroyed()) {
-        this.panelWindow.showInactive()
-      }
-    }
+    this.remember(outcome)
+    this.publish()
+    return this.snapshot()
   }
 
   async confirmChat(taskId: string, approvalId: string): Promise<SessionSnapshot> {
@@ -456,8 +458,11 @@ export class Desktop {
   }
 
   async guideAction(
-    action: 'did_it' | 'repeat' | 'cant_find' | 'manual' | 'stop'
+    action: 'did_it' | 'repeat' | 'cant_find' | 'manual' | 'stop' | 'press'
   ): Promise<SessionSnapshot> {
+    if (action === 'press') {
+      return this.pressHighlighted()
+    }
     const result = await this.screenHelp.guideAction(action)
     this.remember({
       task: null,
@@ -473,10 +478,42 @@ export class Desktop {
     return this.snapshot()
   }
 
+  private async pressHighlighted(): Promise<SessionSnapshot> {
+    const guide = this.screenHelp.currentGuide()
+    if (!guide?.targetName || guide.status !== 'showing') {
+      this.flash('Nothing to press.')
+      return this.snapshot()
+    }
+    const result = await this.screenHelp.press({
+      name: guide.targetName,
+      ...(guide.targetRole ? { role: guide.targetRole } : {})
+    })
+    this.flash(
+      result.status === 'succeeded'
+        ? `Pressed ${guide.targetName}.`
+        : `Couldn't press ${guide.targetName}.`
+    )
+    return this.snapshot()
+  }
+
+  private flash(text: string): void {
+    this.notice = text
+    if (this.noticeTimer) {
+      clearTimeout(this.noticeTimer)
+    }
+    this.noticeTimer = setTimeout(() => {
+      this.notice = null
+      this.noticeTimer = null
+      this.publish()
+    }, 2600)
+    this.publish()
+  }
+
   async setScreenAccess(enabled: boolean): Promise<SessionSnapshot> {
     if (!enabled) {
       return this.stopSharing()
     }
+    this.screenShareStopped = false
     this.screenHelp.grant()
     await this.screenHelp.promptAccessibility()
     const pending = this.pendingScreenText
@@ -490,6 +527,7 @@ export class Desktop {
   }
 
   stopSharing(): SessionSnapshot {
+    this.screenShareStopped = true
     this.screenHelp.revoke()
     this.pendingScreenText = null
     const running =
@@ -500,6 +538,36 @@ export class Desktop {
     if (running && this.activeTask) {
       const outcome = this.orchestrator.cancel(this.activeTask.id)
       this.remember(outcome)
+    }
+    this.publish()
+    return this.snapshot()
+  }
+
+  async requestSystemPermissions(options: {
+    openSettings?: boolean
+    resumeScreen?: boolean
+  }): Promise<SessionSnapshot> {
+    const result = await promptSystemMedia()
+    if (options.resumeScreen) {
+      this.screenShareStopped = false
+    }
+    if (result.screen === 'granted' && !this.screenShareStopped) {
+      this.screenHelp.grant()
+    }
+    if (!this.accessibilityPrompted) {
+      this.accessibilityPrompted = true
+      await this.screenHelp.promptAccessibility()
+    }
+    if (
+      options.openSettings &&
+      process.platform === 'darwin' &&
+      (result.microphone !== 'granted' || result.screen !== 'granted')
+    ) {
+      try {
+        await shell.openExternal(privacySettingsUrl)
+      } catch {
+        // The sidebar can ask again. System Settings is still available from macOS.
+      }
     }
     this.publish()
     return this.snapshot()
@@ -670,14 +738,20 @@ export class Desktop {
       return
     }
 
+    const area = screen.getPrimaryDisplay().workArea
+    const width = Math.min(panelChrome.width, area.width)
+    const height = Math.min(panelChrome.height, area.height)
     this.panelWindow = new BrowserWindow({
-      width: 440,
-      height: 720,
-      minWidth: 380,
+      width,
+      height,
+      minWidth: Math.min(panelChrome.minWidth, width),
+      minHeight: Math.min(panelChrome.minHeight, height),
+      x: area.x + Math.round((area.width - width) / 2),
+      y: area.y + Math.round((area.height - height) / 2),
       show: false,
       title: 'Companion',
       autoHideMenuBar: true,
-      backgroundColor: '#f6f3ec',
+      backgroundColor: '#f3f3f1',
       webPreferences: secureWebPreferences({
         preloadPath: join(__dirname, '../preload/index.js'),
         devTools: devToolsAllowed()
@@ -686,6 +760,7 @@ export class Desktop {
     this.panelWindow.on('ready-to-show', () => {
       this.panelWindow?.show()
       this.panelWindow?.focus()
+      void this.requestSystemPermissions({})
     })
     this.panelWindow.on('closed', () => {
       this.panelWindow = null

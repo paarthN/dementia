@@ -1,5 +1,6 @@
 import type { RoutedRequest } from './agent'
 import { routedRequestSchema } from './agent'
+import { cleanControlName } from './controls'
 import { parseWebsite, websiteFromPhrase } from './favorites'
 import { matchKnownApp, matchKnownBundle, matchVettedSite, isVettedHostname } from './knownTargets'
 import { parseReminderRequest } from './reminderTime'
@@ -12,10 +13,17 @@ export interface RouterFavorite {
   target: string
 }
 
+export interface PointedControl {
+  name: string
+  role?: string
+  appName?: string
+}
+
 export interface RouterContext {
   favorites?: RouterFavorite[]
   now?: Date
   timeZone?: string
+  pointed?: PointedControl
 }
 
 export function routeUtterance(raw: string, context: RouterContext = {}): RoutedRequest {
@@ -45,6 +53,16 @@ export function routeUtterance(raw: string, context: RouterContext = {}): Routed
       missingRequiredFields: [],
       requiresScreenContext: true
     })
+  }
+
+  const pressed = pressRequest(text, context)
+  if (pressed) {
+    return pressed
+  }
+
+  const pointed = pointRequest(text)
+  if (pointed) {
+    return pointed
   }
 
   const reminder = routeReminder(text, lower, context)
@@ -221,6 +239,111 @@ function isExplain(lower: string): boolean {
     /what(?:'s| is) this (?:dialog|pop-up|popup|window|error|message)/.test(lower) ||
     /what does this (?:mean|error|pop-up|popup)/.test(lower)
   )
+}
+
+function pressRequest(text: string, context: RouterContext): RoutedRequest | null {
+  const lower = text.toLowerCase().replace(/[.?!]+$/g, '')
+  const typed = /^type\s+(.+?)\s+into\s+(?:the\s+)?(.+)$/i.exec(text.replace(/[.?!]+$/g, ''))
+  if (typed) {
+    const value = (typed[1] ?? '').trim().replace(/^["']|["']$/g, '')
+    const name = cleanControlName(typed[2] ?? '')
+    if (!value || !name) {
+      return finish({
+        intent: 'press_control',
+        mode: 'execute',
+        parameters: {},
+        missingRequiredFields: ['control'],
+        requiresScreenContext: true,
+        userFacingClarification: 'What should I type, and where?'
+      })
+    }
+    return pressParams({ name, text: value })
+  }
+  if (/^(?:do it for me|do this for me|click it|press it|tap it)$/.test(lower)) {
+    if (!context.pointed?.name) {
+      return finish({
+        intent: 'press_control',
+        mode: 'execute',
+        parameters: {},
+        missingRequiredFields: ['control'],
+        requiresScreenContext: true,
+        userFacingClarification: 'What should I press?'
+      })
+    }
+    return pressParams(context.pointed)
+  }
+  const click = /^(?:click|press|tap)\s+(?:on\s+)?(?:the\s+)?(.+)$/i.exec(
+    text.replace(/[.?!]+$/g, '')
+  )
+  if (!click?.[1]) {
+    return null
+  }
+  const name = cleanControlName(click[1])
+  if (!name || /^(?:it|this|that)$/i.test(name)) {
+    if (context.pointed?.name) {
+      return pressParams(context.pointed)
+    }
+    return finish({
+      intent: 'press_control',
+      mode: 'execute',
+      parameters: {},
+      missingRequiredFields: ['control'],
+      requiresScreenContext: true,
+      userFacingClarification: 'What should I press?'
+    })
+  }
+  return pressParams({ name })
+}
+
+function pressParams(input: {
+  name: string
+  role?: string
+  appName?: string
+  text?: string
+}): RoutedRequest {
+  return finish({
+    intent: 'press_control',
+    mode: 'execute',
+    parameters: {
+      name: input.name,
+      ...(input.role ? { role: input.role } : {}),
+      ...(input.appName ? { appName: input.appName } : {}),
+      ...(input.text ? { text: input.text } : {})
+    },
+    missingRequiredFields: [],
+    requiresScreenContext: true
+  })
+}
+
+function pointRequest(text: string): RoutedRequest | null {
+  const lower = text.toLowerCase()
+  if (/show me how to save|how do i save|save this|save in textedit/.test(lower)) {
+    return null
+  }
+  if (
+    /(accessibility|text size|text-size|display settings)/.test(lower) &&
+    /show me|where|guide|highlight/.test(lower)
+  ) {
+    return null
+  }
+  const made = /show me how to make (?:this|it|the text)\s+(.+)$/i.exec(text)
+  const where = /^where is\s+(.+)$/i.exec(text)
+  const show = /^(?:show me|highlight|point(?:\s+at|\s+to)?)\s+(.+)$/i.exec(text)
+  const raw = made?.[1] ?? where?.[1] ?? (show && !/^how\b/i.test(show[1] ?? '') ? show[1] : null)
+  if (!raw) {
+    return null
+  }
+  const name = cleanControlName(raw)
+  if (!name || /^(?:how|where)$/i.test(name)) {
+    return null
+  }
+  return finish({
+    intent: 'guide_task',
+    mode: 'guide',
+    parameters: { name },
+    missingRequiredFields: [],
+    requiresScreenContext: true
+  })
 }
 
 function isGuide(lower: string): boolean {

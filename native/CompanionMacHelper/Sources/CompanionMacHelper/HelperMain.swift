@@ -66,13 +66,14 @@ private func dispatchOnMain(method: String, params: [String: Any]) -> [String: A
         return foregroundResponse()
     case "ui.inspectForeground":
         return inspect(
+            params,
             depth: bounded(params["depth"], default: 4, cap: maxDepthCap),
             maxNodes: bounded(params["maxNodes"], default: 80, cap: maxNodesCap)
         )
     case "ui.findElement", "ui.readElementState":
         return find(params)
     case "ui.invokeElement":
-        return fail(code: "not_allowlisted", message: "This helper will not press controls.")
+        return invoke(params)
     default:
         return fail(code: "unknown_method", message: "That helper method is not available.")
     }
@@ -99,11 +100,11 @@ private func foregroundResponse() -> [String: Any] {
     }
 }
 
-private func inspect(depth: Int, maxNodes: Int) -> [String: Any] {
+private func inspect(_ params: [String: Any] = [:], depth: Int, maxNodes: Int) -> [String: Any] {
     guard AXIsProcessTrusted() else {
         return fail(code: "access_denied", message: "Accessibility permission is not granted.")
     }
-    switch readForeground() {
+    switch targetApp(params, bringForward: params["bringForward"] as? Bool == true) {
     case let .denied(message):
         return fail(code: "access_denied", message: message)
     case let .protected(kind):
@@ -164,6 +165,146 @@ private func menuBar(_ application: AXUIElement) -> AXUIElement? {
         return (raw as! AXUIElement)
     }
     return nil
+}
+
+private func invoke(_ params: [String: Any]) -> [String: Any] {
+    guard AXIsProcessTrusted() else {
+        return fail(code: "access_denied", message: "Accessibility permission is not granted.")
+    }
+    let name = (params["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if name.isEmpty {
+        return fail(code: "not_found", message: "What should I press?")
+    }
+    if sensitiveName(name) {
+        return fail(code: "protected_context", message: "I won't press a password field.")
+    }
+    let role = params["role"] as? String
+    let text = params["text"] as? String
+    switch targetApp(params, bringForward: true) {
+    case let .denied(message):
+        return fail(code: "access_denied", message: message)
+    case let .protected(kind):
+        return fail(code: "protected_context", message: "I can't work with that secure screen.", details: ["protection": kind])
+    case let .ready(window):
+        var found: [AXUIElement] = []
+        var sawSecure = false
+        if let element = window.element {
+            collectMatches(element, depth: maxDepthCap, name: name, role: role, into: &found, secure: &sawSecure)
+        }
+        if let menu = menuBar(window.application), !sawSecure {
+            collectMenuMatches(menu, name: name, role: role, into: &found, secure: &sawSecure)
+        }
+        if sawSecure {
+            return fail(code: "protected_context", message: "I can't work with that secure screen.", details: ["protection": "secure_field"])
+        }
+        if found.isEmpty {
+            return fail(code: "not_found", message: "I can't find \(name) on this screen.")
+        }
+        if found.count > 1 {
+            return fail(code: "ambiguous", message: "Which one should I use?")
+        }
+        let target = found[0]
+        let axRole = stringAttribute(target, kAXRoleAttribute) ?? ""
+        let label = labelOf(target, role: axRole)
+        if let text, !text.isEmpty {
+            let textRoles = ["AXTextField", "AXTextArea", "AXComboBox"]
+            if !textRoles.contains(axRole) {
+                return fail(code: "not_allowlisted", message: "I can type into a text field.")
+            }
+            let setError = AXUIElementSetAttributeValue(target, kAXValueAttribute as CFString, text as CFTypeRef)
+            if setError != .success {
+                return fail(code: "not_allowlisted", message: "I couldn't type into that field.")
+            }
+            return ok(["typed": true, "changed": true, "name": label, "role": axRole])
+        }
+        if !performPress(target, role: axRole) {
+            return fail(code: "not_allowlisted", message: "I couldn't press that control.")
+        }
+        return ok(["pressed": true, "changed": true, "name": label, "role": axRole])
+    }
+}
+
+private func collectMenuMatches(
+    _ menu: AXUIElement,
+    name: String,
+    role: String?,
+    into found: inout [AXUIElement],
+    secure: inout Bool
+) {
+    collectMatches(menu, depth: 0, name: name, role: role, into: &found, secure: &secure)
+    guard let items = childrenOf(menu) else {
+        return
+    }
+    for item in items {
+        if secure {
+            return
+        }
+        collectMatches(item, depth: 0, name: name, role: role, into: &found, secure: &secure)
+        for popup in childrenOf(item) ?? [] {
+            guard
+                let popupBounds = boundsOf(popup),
+                (popupBounds["height"] ?? 0) > 1,
+                (popupBounds["width"] ?? 0) > 1
+            else {
+                continue
+            }
+            collectMatches(popup, depth: 3, name: name, role: role, into: &found, secure: &secure)
+        }
+    }
+}
+
+private func collectMatches(
+    _ element: AXUIElement,
+    depth: Int,
+    name: String,
+    role: String?,
+    into found: inout [AXUIElement],
+    secure: inout Bool
+) {
+    if secure {
+        return
+    }
+    let axRole = stringAttribute(element, kAXRoleAttribute) ?? ""
+    let subrole = stringAttribute(element, kAXSubroleAttribute) ?? ""
+    if axRole == "AXSecureTextField" || subrole == "AXSecureTextField" || subrole == (kAXSecureTextFieldSubrole as String) {
+        secure = true
+        return
+    }
+    let label = labelOf(element, role: axRole)
+    let enabled = boolAttribute(element, kAXEnabledAttribute) ?? true
+    let skipped = axRole == "AXWindow" || axRole == "AXMenuBar" || axRole == "AXApplication"
+    if enabled && !skipped && sameControlName(label, name) && (role == nil || role == axRole) {
+        found.append(element)
+    }
+    if depth <= 0 {
+        return
+    }
+    for child in childrenOf(element) ?? [] {
+        collectMatches(child, depth: depth - 1, name: name, role: role, into: &found, secure: &secure)
+        if secure {
+            return
+        }
+    }
+}
+
+private func sameControlName(_ actual: String, _ expected: String) -> Bool {
+    func norm(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".…"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let wanted = norm(expected)
+    return !wanted.isEmpty && norm(actual) == wanted
+}
+
+private func sensitiveName(_ value: String) -> Bool {
+    let lower = value.lowercased()
+    if lower.contains("password") || lower.contains("passcode") {
+        return true
+    }
+    return lower.range(of: "\\bpin\\b", options: .regularExpression) != nil
 }
 
 private func find(_ params: [String: Any]) -> [String: Any] {
@@ -306,6 +447,68 @@ private struct ForegroundWindow {
     }
 }
 
+private func companionPids() -> Set<pid_t> {
+    [getpid(), getppid()]
+}
+
+private func appBehindCompanion() -> pid_t? {
+    let skip = companionPids()
+    guard
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
+    else {
+        return nil
+    }
+    for window in windows {
+        let layer = (window[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+        if layer != 0 {
+            continue
+        }
+        guard let owner = window[kCGWindowOwnerPID as String] as? NSNumber else {
+            continue
+        }
+        let pid = pid_t(owner.int32Value)
+        if pid <= 0 || skip.contains(pid) {
+            continue
+        }
+        let name = window[kCGWindowOwnerName as String] as? String ?? ""
+        if name == "Window Server" || name == "Dock" || name == "Control Center" {
+            continue
+        }
+        return pid
+    }
+    return nil
+}
+
+private func activateApp(_ pid: pid_t) {
+    MainActor.assumeIsolated {
+        let app = NSApplication.shared
+        _ = app.setActivationPolicy(.accessory)
+        _ = NSRunningApplication(processIdentifier: pid)?.activate(options: [.activateAllWindows])
+        RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+        _ = app.setActivationPolicy(.prohibited)
+    }
+}
+
+private func performPress(_ element: AXUIElement, role: String) -> Bool {
+    if AXUIElementPerformAction(element, "AXPress" as CFString) == .success {
+        return true
+    }
+    if role == "AXMenuBarItem" || role == "AXMenuItem" || role == "AXMenuButton" || role == "AXPopUpButton" {
+        return AXUIElementPerformAction(element, "AXShowMenu" as CFString) == .success
+    }
+    return false
+}
+
+private func targetApp(_ params: [String: Any], bringForward: Bool) -> ForegroundRead {
+    let requested = params["processId"] as? Int ?? 0
+    var read = requested > 0 ? readApp(pid: pid_t(requested)) : readForeground()
+    if bringForward, case let .ready(window) = read {
+        activateApp(window.processId)
+        read = readApp(pid: window.processId)
+    }
+    return read
+}
+
 private func readForeground() -> ForegroundRead {
     let system = AXUIElementCreateSystemWide()
     var appRef: CFTypeRef?
@@ -329,7 +532,14 @@ private func readForeground() -> ForegroundRead {
     guard let application else {
         return .denied("I couldn't read the front app.")
     }
+    if companionPids().contains(pid), let other = appBehindCompanion() {
+        return readApp(pid: other)
+    }
+    return readApp(pid: pid, application: application)
+}
 
+private func readApp(pid: pid_t, application given: AXUIElement? = nil) -> ForegroundRead {
+    let application = given ?? AXUIElementCreateApplication(pid)
     let running = NSRunningApplication(processIdentifier: pid)
     let bundleId = running?.bundleIdentifier
     if let bundleId, protectedBundles.contains(bundleId) {

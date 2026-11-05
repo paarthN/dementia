@@ -84,7 +84,7 @@ Reduced motion is optional and should be offered. Idle animation must not flash,
 The Electron main process owns:
 
 1. **Mascot window** — transparent, always on top, narrow hit region.
-2. **Panel window** — Home, Settings, and Chat. About 380–460 CSS px wide at standard scale. It grows for large text, stays inside the work area, and is keyboard accessible.
+2. **Panel window** — Home, Settings, and Chat in a normal desktop window, about 1040×680 CSS px, with a sidebar and a content column. Minimum about 860×560. It stays inside the work area, can be resized, and is keyboard accessible.
 3. **Guidance overlay** — transparent, per-monitor, click-through. It draws borders, arrows, labels, and optional dimming without capturing clicks meant for the target app.
 
 Do not draw over the lock screen or a password dialog. Do not assume an overlay appears above protected fullscreen windows. Keep the overlay and panel aligned when the display or target window changes. Prefer separate windows over one full-screen transparent window that swallows the mouse. macOS may require a panel-style window and `setVisibleOnAllWorkspaces` for the mascot and overlay. Prove that on a real display before calling it done.
@@ -114,7 +114,7 @@ Do not draw over the lock screen or a password dialog. Do not assume an overlay 
 
 ### Companion display (P0)
 
-**SET-001 Text size.** Presets `Comfortable`, `Large`, and `Extra large`, plus optional fine adjustment. Proposed body sizes: 20 px, 23 px, and 27 px. Usable at 200% display scale.
+**SET-001 Text size.** Presets `Comfortable`, `Large`, and `Extra large`, plus optional fine adjustment. Body sizes: 15 px, 18 px, and 22 px. Usable at 200% display scale.
 
 **SET-002 Content scale.** Scale layout, type, and icons together through design tokens. Avoid browser zoom if it breaks overlay alignment.
 
@@ -141,6 +141,7 @@ Do not draw over the lock screen or a password dialog. Do not assume an overlay 
 - Push-to-talk by default, with an optional shortcut.
 - Voice output on or off. Volume and speed when the TTS provider supports them.
 - Status is one of “Microphone off,” “Listening now,” or “Microphone not available.”
+- Chat uses a Listen button. Click starts the microphone. Click Stop ends it.
 - Stopping voice leaves text chat working.
 
 ### System Settings group
@@ -153,7 +154,7 @@ Deep links and guided navigation. Verify the URL scheme on the target macOS vers
 2. **Message feed.** User and assistant messages, readable timestamps, spacing, and a copy button.
 3. **Context banner.** “Screen access: Off/On” and “Microphone: Off/Listening.”
 4. **Suggestions.** “Open an app,” “Help with this screen,” “Make text bigger,” “Set a reminder.”
-5. **Composer.** A large field, Send, Microphone, and an optional “Explain this screen” action.
+5. **Composer.** A message field, Send, and Listen. Enter sends. Shift+Enter adds a line.
 6. **Task area.** Progress, confirmation cards, Stop, Cancel, Try again, and Switch to guidance.
 7. **Live region.** Polite announcements for new status. Do not read every streamed token.
 

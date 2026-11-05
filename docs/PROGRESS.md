@@ -67,6 +67,35 @@ Re-verified on 2026-11-04 before Phase 0 was treated as ready.
 
 ## Log
 
+### 2026-11-04 — Open installed apps by name
+
+“Open Firefox” no longer stops at the built-in Apple list. A known app still opens by bundle id. Any other plain app name is passed to `open -a`, so macOS opens it when it is installed and reports it missing when it is not. A path or other unsafe name is refused before `open` runs. Pressing a named control still uses the app in front, including one that was just opened.
+
+### 2026-11-04 — Desktop window, Listen, and permission prompts
+
+The panel opens as a 1040×680 window with a sidebar, instead of a 440×720 column. Comfortable text is 15 px. Chat has a Listen button that starts the microphone and a Stop button that ends it. The words stay in the message box until Send. On first show, the app asks macOS for the microphone, screen recording, and Accessibility. If screen recording is allowed, screen access turns on. Stop sharing keeps it off until Allow screen. The screen probe is a 1×1 thumbnail and is not kept.
+
+The running window was not clicked through in this pass. `npm test` passed, 82 tests, 3 skipped. `npm run typecheck` and `npm run lint` passed.
+
+### 2026-11-04 — Show and press a live control
+
+“Show me Save”, “Where is File?”, and “Show me how to make this bold” look at the foreground app and ring one control when its name and role match. The overlay keeps the click-through window and adds a short card beside the ring. The TextEdit Save and Accessibility Display guides still run as scripts.
+
+“Click Save” and “Do it for me” on a highlighted step preview the control, then the helper presses that same control with the Accessibility press action. The press is refused for a password field, the lock screen, a secure prompt, or more than one match. If the control is gone at confirmation time, nothing is pressed. Typing uses the same path for a text field.
+
+Commands from the repo root:
+
+- `npm test` — passed, 79 tests, 3 skipped.
+- `npm run typecheck` — passed.
+- `npm run lint` — passed.
+- `npm run build:helper` — the arm64 helper compiled and was ad-hoc signed.
+
+The Electron window was not clicked through, so a live press in TextEdit was not checked by hand.
+
+A request typed in Companion was reading Companion, so File and Save were missing. The helper now reads the app behind Companion and brings that app forward. If Save is still inside the File menu, the ring stays on File until Save appears. The Show me how / Do it for me switch was removed. `npm test` passed, 80 tests, 3 skipped. `npm run typecheck` and `npm run lint` passed. `npm run build:helper` compiled and signed the helper. Restart `npm run dev` so the new helper is the one that launches.
+
+Press on a highlighted control now presses that control, instead of opening another confirmation. The helper brings the other app forward before the press. A miss shows a small note that disappears, and the guide controls are one row: Press and Stop. The on-screen label is a short pill beside a thin ring.
+
 ### 2026-11-04 — Bug fixes after Phases 0–7
 
 Found while reading the running paths and confirmed with `npm test` (70 passed, 3 skipped), `npm run typecheck`, and `npm run lint`.

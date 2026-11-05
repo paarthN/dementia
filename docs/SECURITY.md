@@ -57,9 +57,9 @@ Do not say “I can see everything,” “I can do anything,” or “Your data 
 
 Screen reading, the microphone, and consequential actions are opt-in and visible.
 
-- Microphone defaults to off. Push-to-talk only in the MVP. No wake word.
-- No silent hot-mic session and no background audio upload.
-- Screen capture requires an app-owned consent step even if Electron `desktopCapturer` is available. Show a banner while capture is active.
+- The desktop window asks macOS for the microphone and for screen recording when it first opens. If screen recording is allowed, screen access turns on and the sidebar says so. Stop sharing turns it off for the rest of that launch.
+- Listening starts only when the user clicks Listen, and stops when they click Stop. No wake word. No silent hot-mic session and no background audio upload.
+- A capture that is actually in progress shows a banner and Stop sharing. The one-pixel probe used to raise the system screen prompt is discarded and not stored.
 - “Stop sharing” ends capture, releases buffers, clears the indicator, and fails or pauses the screen-dependent task.
 - Denying permission is final for that request. Do not re-prompt in a loop. Typed chat and non-screen tools stay available.
 - Diagnostic telemetry is off until the user consents.
@@ -120,7 +120,7 @@ Resetting appearance does not delete favorites or reminders. Deleting local data
 - Release builds do not enable DevTools by default.
 - No long-lived provider key inside the desktop binary or the renderer bundle.
 - The Swift helper is stdio-only, launched by the main process, with size limits, timeouts, and fail-closed crashes.
-- `ui.invokeElement` is allowlisted in the main process before the helper runs it.
+- `ui.invokeElement` is allowlisted in the main process before the helper runs it. A press re-finds the control by name and role, then uses the Accessibility press action. It does not click a coordinate.
 - The renderer cannot read secrets or call unexposed Electron APIs (**T-SEC-01**).
 - Stored preferences contain no API keys or OAuth tokens (**T-SEC-02**).
 - Capture images and microphone audio are not persisted by default (**T-SEC-03**).

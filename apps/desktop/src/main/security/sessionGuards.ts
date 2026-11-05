@@ -1,6 +1,7 @@
 import { session, type WebContents } from 'electron'
 import { RENDERER_CONTENT_SECURITY_POLICY } from '../../shared/csp'
 import { isAllowedAppUrl } from '../../shared/navigation'
+import { mediaPermissionAllowed } from '../../shared/systemPermissions'
 import { appUrlPolicy } from './appUrlPolicy'
 
 export function installSessionGuards(): void {
@@ -13,8 +14,8 @@ export function installSessionGuards(): void {
     })
   })
 
-  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => {
-    callback(false)
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => {
+    callback(mediaPermissionAllowed(permission))
   })
 }
 

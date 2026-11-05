@@ -271,9 +271,9 @@ describe('Swift helper', () => {
         pong: true
       })
       await expect(
-        bridge.request('ui.invokeElement', {}, { timeoutMs: 5_000 })
+        bridge.request('ui.invokeElement', { x: 10, y: 20 }, { timeoutMs: 5_000 })
       ).rejects.toMatchObject({
-        code: 'not_allowlisted'
+        code: expect.stringMatching(/^(?:access_denied|not_found)$/)
       })
     } finally {
       bridge.close()

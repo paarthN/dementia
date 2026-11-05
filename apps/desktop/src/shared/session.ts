@@ -17,6 +17,7 @@ export interface SessionSnapshot {
   activeTask: ActiveTaskView | null
   pendingApproval: PendingApproval | null
   shortcutWarning: string | null
+  notice: string | null
   panelView: PanelView
   screen: {
     access: 'off' | 'on'

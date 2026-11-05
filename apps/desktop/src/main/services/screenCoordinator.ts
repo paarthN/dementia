@@ -1,8 +1,11 @@
 import type { ToolResult } from '../../shared/agent'
+import { controlSignature, describeControlMatch, type ControlLookup } from '../../shared/controls'
 import {
   reduceGuide,
   startGuide as beginGuide,
+  startPoint,
   type GuideAction,
+  type GuideState,
   type GuideView
 } from '../../shared/guides'
 import type { DisplaySpace } from '../../shared/highlightGeometry'
@@ -22,11 +25,36 @@ export interface ScreenStatus {
   captureActive: boolean
 }
 
+function guideState(view: GuideView): GuideState {
+  return {
+    guideId: view.guideId,
+    stepIndex: view.stepIndex,
+    status: view.status,
+    ...(view.targetName ? { targetName: view.targetName } : {}),
+    ...(view.targetRole ? { targetRole: view.targetRole } : {})
+  }
+}
+
 const permissionResult: ToolResult = {
   status: 'requires_permission',
   summary:
     "I can't see the screen without permission. You can describe the message, or turn on screen access for this request.",
   errorCode: 'screen_permission',
+  verification: { method: 'none', passed: false }
+}
+
+const protectedResult: ToolResult = {
+  status: 'failed',
+  summary:
+    "I can't work with that secure screen. If this is a password or lock screen, you should decide. I won't press Continue.",
+  errorCode: 'protected_context',
+  verification: { method: 'accessibility', passed: false }
+}
+
+const helperDown: ToolResult = {
+  status: 'failed',
+  summary: 'Some screen-help features are unavailable.',
+  errorCode: 'helper_unavailable',
   verification: { method: 'none', passed: false }
 }
 
@@ -43,6 +71,9 @@ export function createScreenCoordinator(options: {
   inspect: () => Promise<ToolResult>
   captureOnce: (explicitConsent: boolean) => Promise<ToolResult>
   startGuide: (guideId: string) => Promise<ToolResult>
+  point: (name: string, role?: string) => Promise<ToolResult>
+  describeControl: (input: { name: string; role?: string }) => Promise<ControlLookup>
+  press: (input: { name: string; role?: string; text?: string }) => Promise<ToolResult>
   guideAction: (action: GuideAction) => Promise<ToolResult>
   currentGuide: () => GuideView | null
   clearGuide: () => void
@@ -56,17 +87,30 @@ export function createScreenCoordinator(options: {
   let lastView: InspectionView | null = null
   let captureAbort: AbortController | null = null
   let guide: GuideView | null = null
+  let followedPid: number | null = null
   const vision = options.vision ?? unavailableVision
   const displays = options.displays ?? (() => [])
 
-  async function readSnapshot(): Promise<UiSnapshot | null> {
+  async function readSnapshot(reading?: {
+    processId?: number
+    bringForward?: boolean
+  }): Promise<UiSnapshot | null> {
     const raw = await options.bridge.request(
       'ui.inspectForeground',
-      { depth: 8, maxNodes: 120 },
+      {
+        depth: 8,
+        maxNodes: 120,
+        ...(reading?.processId ? { processId: reading.processId } : {}),
+        ...(reading?.bringForward ? { bringForward: true } : {})
+      },
       { timeoutMs: 8_000 }
     )
     const parsed = uiSnapshotSchema.safeParse(raw)
-    return parsed.success ? redactSnapshot(parsed.data) : null
+    const snapshot = parsed.success ? redactSnapshot(parsed.data) : null
+    if (snapshot && !snapshot.protected && !reading?.processId) {
+      followedPid = snapshot.processId
+    }
+    return snapshot
   }
 
   function remember(snapshot: UiSnapshot | null, known: string[], unknown: string[]): void {
@@ -111,6 +155,7 @@ export function createScreenCoordinator(options: {
       captureAbort?.abort()
       captureAbort = null
       guide = null
+      followedPid = null
     },
     async promptAccessibility() {
       try {
@@ -301,9 +346,10 @@ export function createScreenCoordinator(options: {
         return permissionResult
       }
       try {
-        const snapshot = await readSnapshot()
+        const snapshot = await readSnapshot({ bringForward: true })
         if (snapshot?.protected) {
           guide = null
+          followedPid = null
           return {
             status: 'failed',
             summary:
@@ -353,6 +399,136 @@ export function createScreenCoordinator(options: {
         }
       }
     },
+    async point(name, role) {
+      if (access !== 'on') {
+        return permissionResult
+      }
+      const trimmed = name.trim()
+      if (!trimmed) {
+        guide = null
+        return {
+          status: 'failed',
+          summary: 'What should I point at?',
+          errorCode: 'not_found',
+          verification: { method: 'accessibility', passed: false }
+        }
+      }
+      try {
+        const snapshot = await readSnapshot({ bringForward: true })
+        if (snapshot?.protected) {
+          guide = null
+          followedPid = null
+          return protectedResult
+        }
+        const started = startPoint(
+          { name: trimmed, ...(role ? { role } : {}) },
+          snapshot,
+          displays()
+        )
+        const grounded = started.view.highlight !== null
+        guide = grounded ? started.view : null
+        return {
+          status: grounded ? 'succeeded' : 'failed',
+          summary: started.view.instruction,
+          data: { guide: started.view },
+          ...(grounded ? {} : { errorCode: 'not_found' }),
+          verification: {
+            method: 'accessibility',
+            passed: grounded,
+            details: started.view.status
+          }
+        }
+      } catch {
+        guide = null
+        return helperDown
+      }
+    },
+    async describeControl(input) {
+      const snapshot = await readSnapshot(
+        followedPid ? { processId: followedPid, bringForward: true } : { bringForward: true }
+      )
+      return describeControlMatch(snapshot, input.name, input.role)
+    },
+    async press(input) {
+      if (access !== 'on') {
+        return permissionResult
+      }
+      try {
+        const before = await readSnapshot(
+          followedPid ? { processId: followedPid, bringForward: true } : { bringForward: true }
+        )
+        const lookup = describeControlMatch(before, input.name, input.role)
+        if (lookup.blocked) {
+          return {
+            status: 'failed',
+            summary: lookup.summary,
+            errorCode: 'protected_context',
+            verification: { method: 'accessibility', passed: false }
+          }
+        }
+        if (lookup.matchCount !== 1 || !lookup.match) {
+          return {
+            status: 'failed',
+            summary: lookup.summary,
+            errorCode: lookup.matchCount > 1 ? 'ambiguous' : 'not_found',
+            verification: { method: 'accessibility', passed: false }
+          }
+        }
+        const raw = await options.bridge.request(
+          'ui.invokeElement',
+          {
+            name: lookup.match.name,
+            role: lookup.match.role,
+            ...(before?.processId ? { processId: before.processId } : {}),
+            ...(input.text ? { text: input.text } : {})
+          },
+          { timeoutMs: 8_000 }
+        )
+        const body =
+          raw && typeof raw === 'object'
+            ? (raw as { pressed?: boolean; typed?: boolean; changed?: boolean })
+            : {}
+        const after = await readSnapshot(
+          before?.processId ? { processId: before.processId } : undefined
+        )
+        const changed =
+          body.changed === true || controlSignature(before) !== controlSignature(after)
+        const app = before?.processName || before?.bundleId
+        const where = app ? `${lookup.match.name} in ${app}` : lookup.match.name
+        const acted = body.pressed === true || body.typed === true
+        if (!acted || !changed) {
+          return {
+            status: 'failed',
+            summary: input.text
+              ? `I tried to type into ${where}, but I couldn't confirm the screen changed.`
+              : `I pressed ${where}, but I couldn't confirm the screen changed.`,
+            errorCode: 'unverified',
+            verification: { method: 'accessibility', passed: false }
+          }
+        }
+        return {
+          status: 'succeeded',
+          summary: input.text ? `I typed that into ${where}.` : `I pressed ${where}.`,
+          verification: { method: 'accessibility', passed: true }
+        }
+      } catch (error) {
+        if (error instanceof HelperCallError && error.code === 'protected_context') {
+          return protectedResult
+        }
+        if (
+          error instanceof HelperCallError &&
+          (error.code === 'not_found' || error.code === 'ambiguous')
+        ) {
+          return {
+            status: 'failed',
+            summary: error.message,
+            errorCode: error.code,
+            verification: { method: 'accessibility', passed: false }
+          }
+        }
+        return helperDown
+      }
+    },
     async guideAction(action) {
       if (!guide) {
         return {
@@ -363,13 +539,9 @@ export function createScreenCoordinator(options: {
         }
       }
       if (action === 'stop') {
-        const reduced = reduceGuide(
-          { guideId: guide.guideId, stepIndex: guide.stepIndex, status: guide.status },
-          'stop',
-          null,
-          displays()
-        )
+        const reduced = reduceGuide(guideState(guide), 'stop', null, displays())
         guide = null
+        followedPid = null
         return {
           status: 'cancelled',
           summary: reduced.view.instruction,
@@ -377,13 +549,8 @@ export function createScreenCoordinator(options: {
         }
       }
       try {
-        const snapshot = await readSnapshot()
-        const reduced = reduceGuide(
-          { guideId: guide.guideId, stepIndex: guide.stepIndex, status: guide.status },
-          action,
-          snapshot,
-          displays()
-        )
+        const snapshot = await readSnapshot(followedPid ? { processId: followedPid } : undefined)
+        const reduced = reduceGuide(guideState(guide), action, snapshot, displays())
         guide = reduced.view.status === 'stopped' ? null : reduced.view
         return {
           status: reduced.view.status === 'stopped' ? 'cancelled' : 'succeeded',
@@ -404,6 +571,7 @@ export function createScreenCoordinator(options: {
     currentGuide: () => guide,
     clearGuide() {
       guide = null
+      followedPid = null
     },
     inspectionView: () => (developerInspection ? lastView : null),
     setDeveloperInspection(enabled) {

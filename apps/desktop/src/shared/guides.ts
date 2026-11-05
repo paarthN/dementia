@@ -1,7 +1,16 @@
+import {
+  cleanControlName,
+  findVisibleControls,
+  menuFor,
+  missingControlCopy,
+  normalizeControlName,
+  sensitiveControlName,
+  whichControlQuestion
+} from './controls'
 import type { UiControl, UiSnapshot } from './inspection'
 import { placeHighlight, type DisplaySpace, type PlacedHighlight } from './highlightGeometry'
 
-export const guideIds = ['textedit.save', 'accessibility.display'] as const
+export const guideIds = ['textedit.save', 'accessibility.display', 'control.point'] as const
 export type GuideId = (typeof guideIds)[number]
 export type GuideStatus = 'showing' | 'manual' | 'completed' | 'stopped' | 'missing'
 
@@ -13,12 +22,17 @@ export interface GuideView {
   status: GuideStatus
   instruction: string
   highlight: PlacedHighlight | null
+  targetName?: string
+  targetRole?: string
+  appName?: string
 }
 
 export interface GuideState {
   guideId: GuideId
   stepIndex: number
   status: GuideStatus
+  targetName?: string
+  targetRole?: string
 }
 
 export type GuideAction = 'did_it' | 'repeat' | 'cant_find' | 'manual' | 'stop' | 'refresh'
@@ -52,7 +66,7 @@ export function startGuide(
   snapshot: UiSnapshot | null,
   displays: DisplaySpace[]
 ): { state: GuideState; view: GuideView } | null {
-  if (!isGuideId(guideId)) {
+  if (!isGuideId(guideId) || guideId === 'control.point') {
     return null
   }
   let state: GuideState = { guideId, stepIndex: 0, status: 'showing' }
@@ -60,6 +74,22 @@ export function startGuide(
     state = { ...state, status: 'manual' }
   }
   return { state, view: presentGuide(state, snapshot, displays) }
+}
+
+export function startPoint(
+  target: { name: string; role?: string },
+  snapshot: UiSnapshot | null,
+  displays: DisplaySpace[]
+): { state: GuideState; view: GuideView } {
+  const state: GuideState = {
+    guideId: 'control.point',
+    stepIndex: 0,
+    status: 'showing',
+    targetName: cleanControlName(target.name) || target.name.trim(),
+    ...(target.role ? { targetRole: target.role } : {})
+  }
+  const view = presentPoint(state, snapshot, displays)
+  return { state: rememberGoal(state, view), view }
 }
 
 export function reduceGuide(
@@ -93,6 +123,13 @@ function advance(
   snapshot: UiSnapshot | null,
   displays: DisplaySpace[]
 ): { state: GuideState; view: GuideView } {
+  if (state.guideId === 'control.point') {
+    const next = {
+      ...state,
+      status: state.status === 'showing' ? ('completed' as const) : state.status
+    }
+    return { state: next, view: presentPoint(next, snapshot, displays) }
+  }
   if (state.status === 'stopped' || state.status === 'completed') {
     return { state, view: presentGuide(state, snapshot, displays) }
   }
@@ -125,6 +162,10 @@ function refresh(
   snapshot: UiSnapshot | null,
   displays: DisplaySpace[]
 ): { state: GuideState; view: GuideView } {
+  if (state.guideId === 'control.point') {
+    const view = presentPoint(state, snapshot, displays)
+    return { state: rememberGoal(state, view), view }
+  }
   if (state.status !== 'showing') {
     return { state, view: presentGuide(state, snapshot, displays) }
   }
@@ -152,10 +193,104 @@ function presentGuide(
   snapshot: UiSnapshot | null,
   displays: DisplaySpace[]
 ): GuideView {
+  if (state.guideId === 'control.point') {
+    return presentPoint(state, snapshot, displays)
+  }
   if (state.guideId === 'accessibility.display') {
     return presentAccessibility(state, snapshot, displays)
   }
   return presentTextEdit(state, snapshot, displays)
+}
+
+function presentPoint(
+  state: GuideState,
+  snapshot: UiSnapshot | null,
+  displays: DisplaySpace[]
+): GuideView {
+  const query = state.targetName ?? ''
+  const appName = snapshot?.processName || snapshot?.bundleId
+  const base = {
+    guideId: 'control.point' as const,
+    stepIndex: 0,
+    stepCount: 1,
+    stepLabel: 'Step 1 of 1',
+    targetName: query,
+    ...(state.targetRole ? { targetRole: state.targetRole } : {}),
+    ...(appName ? { appName } : {})
+  }
+  if (state.status === 'stopped') {
+    return {
+      ...base,
+      status: 'stopped',
+      instruction: 'I stopped. The highlight is gone.',
+      highlight: null
+    }
+  }
+  if (state.status === 'completed') {
+    return {
+      ...base,
+      status: 'completed',
+      instruction: 'You did that step.',
+      highlight: null
+    }
+  }
+  if (sensitiveControlName(query) || snapshot?.protected) {
+    return {
+      ...base,
+      status: 'missing',
+      instruction: "I won't press a password field.",
+      highlight: null
+    }
+  }
+  if (state.status === 'manual' || state.status === 'missing') {
+    return {
+      ...base,
+      status: state.status,
+      instruction: missingControlCopy(query),
+      highlight: null
+    }
+  }
+  const visible = findVisibleControls(snapshot, query, state.targetRole)
+  if (visible.length > 1) {
+    return {
+      ...base,
+      status: 'showing',
+      instruction: whichControlQuestion(visible),
+      highlight: null
+    }
+  }
+  const match = visible[0]
+  const highlight = match?.bounds ? placeHighlight(match.bounds, displays) : null
+  if (!match || !highlight) {
+    const menuName = menuFor(query)
+    const menu = menuName ? findVisibleControls(snapshot, menuName, 'AXMenuBarItem') : []
+    const menuMatch = menu.length === 1 ? menu[0] : null
+    const menuHighlight = menuMatch?.bounds ? placeHighlight(menuMatch.bounds, displays) : null
+    if (menuMatch && menuHighlight) {
+      return {
+        ...base,
+        status: 'showing',
+        targetName: menuMatch.name,
+        targetRole: menuMatch.role,
+        instruction: `Click ${menuMatch.name}. ${labelOf(query)} is in that menu.`,
+        highlight: menuHighlight
+      }
+    }
+    return {
+      ...base,
+      status: 'missing',
+      instruction: missingControlCopy(match?.name || query),
+      highlight: null
+    }
+  }
+  return {
+    ...base,
+    status: 'showing',
+    targetName: match.name,
+    targetRole: match.role,
+    instruction: appName ? `Click ${match.name} in ${appName}.` : `Click ${match.name}.`,
+    highlight
+  }
 }
 
 function presentTextEdit(
@@ -228,7 +363,10 @@ function presentTextEdit(
       ...base,
       status: 'showing',
       instruction: 'Click File at the top of the window.',
-      highlight: placeHighlight(file.bounds, displays)
+      highlight: placeHighlight(file.bounds, displays),
+      targetName: 'File',
+      targetRole: 'AXMenuBarItem',
+      ...(snapshot?.processName ? { appName: snapshot.processName } : {})
     }
   }
   const save = findControl(snapshot, 'Save', 'AXMenuItem')
@@ -244,7 +382,10 @@ function presentTextEdit(
     ...base,
     status: 'showing',
     instruction: 'Click Save.',
-    highlight: placeHighlight(save.bounds, displays)
+    highlight: placeHighlight(save.bounds, displays),
+    targetName: 'Save',
+    targetRole: 'AXMenuItem',
+    ...(snapshot?.processName ? { appName: snapshot.processName } : {})
   }
 }
 
@@ -311,7 +452,10 @@ function presentAccessibility(
       ...base,
       status: 'showing',
       instruction: 'Click Display in the Accessibility list.',
-      highlight: placeHighlight(display.bounds, displays)
+      highlight: placeHighlight(display.bounds, displays),
+      targetName: 'Display',
+      targetRole: display.role,
+      ...(snapshot?.processName ? { appName: snapshot.processName } : {})
     }
   }
   const accessibility = findControl(snapshot, 'Accessibility')
@@ -320,7 +464,10 @@ function presentAccessibility(
       ...base,
       status: 'showing',
       instruction: 'Click Accessibility in the System Settings sidebar.',
-      highlight: placeHighlight(accessibility.bounds, displays)
+      highlight: placeHighlight(accessibility.bounds, displays),
+      targetName: 'Accessibility',
+      targetRole: accessibility.role,
+      ...(snapshot?.processName ? { appName: snapshot.processName } : {})
     }
   }
   return {
@@ -329,6 +476,26 @@ function presentAccessibility(
     instruction:
       'In the sidebar, choose Accessibility, then Display. I did not change the Mac setting.',
     highlight: null
+  }
+}
+
+function labelOf(name: string): string {
+  const trimmed = name.trim()
+  if (!trimmed) {
+    return 'That'
+  }
+  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1)
+}
+
+function rememberGoal(state: GuideState, view: GuideView): GuideState {
+  const same =
+    normalizeControlName(view.targetName ?? '') === normalizeControlName(state.targetName ?? '') &&
+    normalizeControlName(state.targetName ?? '') !== ''
+  return {
+    ...state,
+    status: view.status,
+    targetName: same ? (view.targetName ?? state.targetName) : state.targetName,
+    targetRole: same ? (view.targetRole ?? state.targetRole) : state.targetRole
   }
 }
 

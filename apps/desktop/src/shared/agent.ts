@@ -11,6 +11,7 @@ export const assistantIntents = [
   'open_system_settings',
   'explain_screen',
   'guide_task',
+  'press_control',
   'general_question',
   'unsupported'
 ] as const

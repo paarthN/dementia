@@ -111,13 +111,46 @@ describe('T-CHAT and T-SET-04', () => {
     expect(missed.responseState).toBe('failure')
     expect(missed.summary).toBe("I couldn't find TextEdit on this computer.")
 
-    const unknown = await new TaskOrchestrator({
+    const installed: string[][] = []
+    const photoshop = await new TaskOrchestrator({
       db,
-      run: async () => 0
+      run: async (_command, args) => {
+        installed.push(args)
+        return 0
+      }
     }).submit('Open Photoshop')
-    expect(unknown.responseState).toBe('failure')
-    expect(unknown.summary).toContain('Photoshop')
-    expect(unknown.responseState).not.toBe('success')
+    expect(installed).toEqual([['-a', 'Photoshop']])
+    expect(photoshop.responseState).toBe('success')
+    expect(photoshop.summary).toBe('Photoshop is open.')
+
+    const chromeCalls: string[][] = []
+    const chrome = await new TaskOrchestrator({
+      db,
+      run: async (_command, args) => {
+        chromeCalls.push(args)
+        return 0
+      }
+    }).submit('Open Chrome')
+    expect(chromeCalls).toEqual([['-a', 'Google Chrome']])
+    expect(chrome.summary).toBe('Google Chrome is open.')
+
+    const missing = await new TaskOrchestrator({
+      db,
+      run: async () => 1
+    }).submit('Open Firefox')
+    expect(missing.responseState).toBe('failure')
+    expect(missing.summary).toBe("I couldn't find Firefox on this computer.")
+
+    const blockedCalls: string[][] = []
+    const blocked = await new TaskOrchestrator({
+      db,
+      run: async (_command, args) => {
+        blockedCalls.push(args)
+        return 0
+      }
+    }).submit('Open /Applications/Firefox.app')
+    expect(blockedCalls).toEqual([])
+    expect(blocked.responseState).toBe('failure')
   })
 
   it('T-CHAT-03 encodes spaces and symbols in the search URL', async () => {

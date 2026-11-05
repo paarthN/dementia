@@ -1,4 +1,5 @@
 import { canonicalJson, type RiskLevel } from '../../shared/agent'
+import { pressPreview } from '../../shared/controls'
 import type { ToolRegistry } from './toolRegistry'
 
 export interface PolicyApproval {
@@ -23,7 +24,13 @@ export type PolicyDecision =
   | { effect: 'permission'; risk: RiskLevel; reason: string }
   | { effect: 'deny'; risk: RiskLevel; reason: string }
 
-const screenTools = new Set(['screen.inspect', 'screen.captureOnce', 'guidance.start'])
+const screenTools = new Set([
+  'screen.inspect',
+  'screen.captureOnce',
+  'guidance.start',
+  'guidance.point',
+  'ui.press'
+])
 
 export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): PolicyDecision {
   if (request.source !== 'user') {
@@ -73,6 +80,14 @@ export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): Po
       effect: 'deny',
       risk,
       reason: 'That needs approval for this exact action, and there is no matching approval.'
+    }
+  }
+
+  if (request.tool === 'ui.press' && !approvalMatches(request)) {
+    return {
+      effect: 'confirm',
+      risk,
+      reason: pressPreview(request.input)
     }
   }
 

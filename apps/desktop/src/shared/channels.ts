@@ -26,6 +26,7 @@ export const companionIpcChannels = {
   completeReminder: 'reminders:complete',
   setReminderNotifications: 'startup:notifications',
   setScreenAccess: 'screen:access',
+  requestSystemPermissions: 'permissions:request',
   stopSharing: 'screen:stop-sharing',
   setDeveloperInspection: 'privacy:developer-inspection',
   setVoice: 'voice:set',

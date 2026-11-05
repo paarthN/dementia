@@ -84,7 +84,7 @@ The assistant plans a supported task, calls permitted tools, waits for required 
 
 First tasks:
 
-- `open_application(appId)` — launch a known or favorited app.
+- `open_application(appId)` — launch a known app, a favorite, or another installed app by its name.
 - `open_website(url)` — open a validated HTTPS site.
 - `search_web(query)` — open a browser search with an encoded query.
 - `create_reminder(title, triggerAt, timezone)` — save and schedule a local reminder.
@@ -157,9 +157,9 @@ Every response names the **scope**:
 
 ## Voice
 
-Typed chat is fully functional in the MVP. Push-to-talk is the first voice mode, behind a provider interface. No always-on microphone in the first release. No hidden wake word.
+Typed chat is fully functional in the MVP. Voice starts when the user clicks Listen and stops when they click Stop. No always-on microphone. No hidden wake word.
 
-1. The user clicks the microphone or holds a shortcut.
+1. The user clicks Listen.
 2. The UI shows “Listening.”
 3. Speech becomes text in a visible, editable field.
 4. The user can correct and send, or turn on auto-send after transcription.

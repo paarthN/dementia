@@ -14,6 +14,13 @@ const titles: Record<PanelView, string> = {
   help: 'Help'
 }
 
+const nav: Array<{ view: PanelView; label: string }> = [
+  { view: 'chat', label: 'Chat' },
+  { view: 'home', label: 'Home' },
+  { view: 'settings', label: 'Settings' },
+  { view: 'help', label: 'Help' }
+]
+
 export function PanelApp(): React.JSX.Element {
   const [session, setSession] = useState<SessionSnapshot | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -43,7 +50,7 @@ export function PanelApp(): React.JSX.Element {
   }, [session])
 
   if (!session) {
-    return <main className="shell">Loading Companion.</main>
+    return <main className="app loading">Opening Companion.</main>
   }
 
   const view = session.panelView
@@ -54,94 +61,116 @@ export function PanelApp(): React.JSX.Element {
   )
   const pixels = textScalePixels[session.preferences.appearance.textScale]
   const fontSize = pixels * session.preferences.appearance.contentScale
+  const screenLabel = session.screen.captureActive
+    ? 'Looking at your screen'
+    : session.screen.access === 'on'
+      ? 'Screen access on'
+      : 'Screen access off'
 
   return (
     <main
-      className="shell"
+      className="app"
       data-spacing={session.preferences.accessibility.extraLineSpacing ? 'loose' : 'regular'}
+      data-motion={session.preferences.appearance.reduceMotion ? 'reduce' : 'full'}
       style={{ fontSize }}
     >
-      <header className="top">
-        {view === 'home' ? null : (
-          <button
-            type="button"
-            className="icon-button"
-            onClick={() => void window.companion.openPanel('home')}
-          >
-            Back
-          </button>
-        )}
-        <h1>{titles[view]}</h1>
-        <button
-          type="button"
-          className="icon-button"
-          onClick={() => void window.companion.closePanel()}
-        >
-          Close
-        </button>
-      </header>
-      {notice ? <p className="notice">{notice}</p> : null}
-      {session.dueReminders.map((item) => (
-        <section key={`${item.reminderId}-${item.kind}`} className="notice" aria-label="Reminder">
-          <p>{item.summary}</p>
-          <button
-            type="button"
-            className="primary"
-            onClick={() => void window.companion.completeReminder(item.reminderId)}
-          >
-            Done
-          </button>
-          <button
-            type="button"
-            className="icon-button"
-            onClick={() => void window.companion.snoozeReminder(item.reminderId)}
-          >
-            Snooze 10 minutes
-          </button>
-          <button
-            type="button"
-            className="icon-button"
-            onClick={() => void window.companion.openPanel('chat')}
-          >
-            Open
-          </button>
-        </section>
-      ))}
-      {view === 'home' ? (
-        <HomePanel
-          session={session}
-          onNotice={setNotice}
-          onCompose={(text) => {
-            setChatDraft(text)
-            void window.companion.openPanel('chat')
-          }}
-        />
-      ) : null}
-      {view === 'settings' ? <SettingsPanel session={session} onNotice={setNotice} /> : null}
-      {view === 'chat' ? (
-        <ChatPanel
-          session={session}
-          draft={chatDraft}
-          onDraftChange={setChatDraft}
-          onListeningChange={onListeningChange}
-        />
-      ) : null}
-      {view === 'help' ? <HelpPanel /> : null}
-      <p className="footer">
-        {session.screen.captureActive
-          ? 'Your screen is being used for this request.'
-          : `Screen access: ${session.screen.access === 'on' ? 'On' : 'Off'}.`}{' '}
-        {micLabel(microphone)}.
-        {session.screen.captureActive ? (
-          <button
-            type="button"
-            className="icon-button"
-            onClick={() => void window.companion.stopSharing()}
-          >
-            Stop sharing
-          </button>
-        ) : null}
-      </p>
+      <aside className="sidebar">
+        <p className="brand">Companion</p>
+        <nav className="nav" aria-label="Sections">
+          {nav.map((item) => (
+            <button
+              key={item.view}
+              type="button"
+              aria-current={view === item.view ? 'page' : undefined}
+              onClick={() => void window.companion.openPanel(item.view)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
+        <footer className="sidebar-foot">
+          <p>{screenLabel}</p>
+          <p>{micLabel(microphone)}</p>
+          {session.screen.access === 'on' ? (
+            <button
+              type="button"
+              className="quiet"
+              onClick={() => void window.companion.stopSharing()}
+            >
+              Stop sharing
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="quiet"
+              onClick={() =>
+                void window.companion.requestSystemPermissions({
+                  openSettings: true,
+                  resumeScreen: true
+                })
+              }
+            >
+              Allow screen
+            </button>
+          )}
+        </footer>
+      </aside>
+      <section className="workspace">
+        <header className="workspace-head">
+          <h1>{titles[view]}</h1>
+        </header>
+        {notice ? <p className="notice">{notice}</p> : null}
+        {session.dueReminders.map((item) => (
+          <section key={`${item.reminderId}-${item.kind}`} className="notice" aria-label="Reminder">
+            <p>{item.summary}</p>
+            <div className="actions">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => void window.companion.completeReminder(item.reminderId)}
+              >
+                Done
+              </button>
+              <button
+                type="button"
+                className="quiet"
+                onClick={() => void window.companion.snoozeReminder(item.reminderId)}
+              >
+                Snooze 10 minutes
+              </button>
+              <button
+                type="button"
+                className="quiet"
+                onClick={() => void window.companion.openPanel('chat')}
+              >
+                Open
+              </button>
+            </div>
+          </section>
+        ))}
+        <div className={view === 'chat' ? 'workspace-body is-chat' : 'workspace-body'}>
+          {view === 'home' ? (
+            <HomePanel
+              session={session}
+              onNotice={setNotice}
+              onCompose={(text) => {
+                setChatDraft(text)
+                void window.companion.openPanel('chat')
+              }}
+            />
+          ) : null}
+          {view === 'settings' ? <SettingsPanel session={session} onNotice={setNotice} /> : null}
+          {view === 'chat' ? (
+            <ChatPanel
+              session={session}
+              draft={chatDraft}
+              onDraftChange={setChatDraft}
+              onListeningChange={onListeningChange}
+            />
+          ) : null}
+          {view === 'help' ? <HelpPanel /> : null}
+        </div>
+      </section>
     </main>
   )
 }

@@ -208,6 +208,18 @@ export function registerIpc(desktop: Desktop): void {
     return desktop.setScreenAccess(payload.enabled)
   })
 
+  ipcMain.handle(
+    companionIpcChannels.requestSystemPermissions,
+    async (event, ...args: unknown[]) => {
+      assertTrustedIpcSender(event)
+      const payload = parseArgs(companionIpcChannels.requestSystemPermissions, args) as {
+        openSettings?: boolean
+        resumeScreen?: boolean
+      }
+      return desktop.requestSystemPermissions(payload)
+    }
+  )
+
   ipcMain.handle(companionIpcChannels.stopSharing, (event, ...args: unknown[]) => {
     assertTrustedIpcSender(event)
     parseArgs(companionIpcChannels.stopSharing, args)
@@ -244,7 +256,7 @@ export function registerIpc(desktop: Desktop): void {
   ipcMain.handle(companionIpcChannels.guideAction, async (event, ...args: unknown[]) => {
     assertTrustedIpcSender(event)
     const payload = parseArgs(companionIpcChannels.guideAction, args) as {
-      action: 'did_it' | 'repeat' | 'cant_find' | 'manual' | 'stop'
+      action: 'did_it' | 'repeat' | 'cant_find' | 'manual' | 'stop' | 'press'
     }
     return desktop.guideAction(payload.action)
   })

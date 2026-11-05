@@ -10,8 +10,27 @@ body,
 
 .highlight {
   position: absolute;
-  border: 4px solid #ffbf00;
-  border-radius: 12px;
-  box-shadow: 0 0 0 2px #1d1a16;
+  box-sizing: border-box;
+  border: 2px solid #1f6f68;
+  border-radius: 8px;
+  box-shadow: 0 0 0 2px #fffaf3;
+  pointer-events: none;
+}
+
+.callout {
+  position: absolute;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 6px 10px;
+  background: #1d1a16;
+  color: #fffaf3;
+  border-radius: 999px;
+  font:
+    600 14px/1.3 "Avenir Next",
+    "Segoe UI",
+    sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   pointer-events: none;
 }

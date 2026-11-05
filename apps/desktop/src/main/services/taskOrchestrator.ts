@@ -123,7 +123,11 @@ export class TaskOrchestrator {
           : "I couldn't reach the assistant service. Try again."
       )
     }
-    if (options.mode === 'guide' && routed.mode === 'execute') {
+    if (
+      options.mode === 'guide' &&
+      routed.mode === 'execute' &&
+      routed.intent !== 'press_control'
+    ) {
       return this.finish(
         this.createTask(text, 'guide'),
         'answer',
@@ -244,6 +248,11 @@ export class TaskOrchestrator {
         return this.finish(task, 'cancelled', 'I stopped. Nothing else will run for that request.')
       }
 
+      const blocked = await this.preparePress(call)
+      if (blocked) {
+        return this.finish(task, blocked.responseState, blocked.summary)
+      }
+
       const decision = decidePolicy(this.registry, {
         tool: call.tool,
         input: call.input,
@@ -323,6 +332,45 @@ export class TaskOrchestrator {
 
     task.state = 'completed'
     return this.finish(task, 'success', lastSummary, recovery)
+  }
+
+  private async preparePress(
+    call: PlannedCall
+  ): Promise<{ responseState: 'failure' | 'needs_input'; summary: string } | null> {
+    if (
+      call.tool !== 'ui.press' ||
+      !this.options.screen?.describeControl ||
+      !this.screenAllowed()
+    ) {
+      return null
+    }
+    const name = typeof call.input.name === 'string' ? call.input.name : ''
+    try {
+      const described = await this.options.screen.describeControl({
+        name,
+        role: typeof call.input.role === 'string' ? call.input.role : undefined
+      })
+      if (described.blocked) {
+        return { responseState: 'failure', summary: described.summary }
+      }
+      if (described.matchCount !== 1 || !described.role) {
+        return { responseState: 'needs_input', summary: described.summary }
+      }
+      const next: Record<string, unknown> = { name: described.name || name, role: described.role }
+      if (described.appName) {
+        next.appName = described.appName
+      }
+      if (typeof call.input.text === 'string') {
+        next.text = call.input.text
+      }
+      call.input = next
+      return null
+    } catch {
+      return {
+        responseState: 'failure',
+        summary: 'Some screen-help features are unavailable.'
+      }
+    }
   }
 
   private askConfirmation(task: AssistantTask, call: PlannedCall, reason: string): TaskOutcome {
@@ -493,9 +541,37 @@ function plan(routed: RoutedRequest): PlannedCall | null {
     case 'explain_screen':
       return { tool: 'screen.inspect', input: routed.parameters }
     case 'guide_task':
-      return typeof routed.parameters.guideId === 'string'
-        ? { tool: 'guidance.start', input: { guideId: routed.parameters.guideId } }
-        : null
+      if (
+        routed.parameters.guideId === 'textedit.save' ||
+        routed.parameters.guideId === 'accessibility.display'
+      ) {
+        return { tool: 'guidance.start', input: { guideId: routed.parameters.guideId } }
+      }
+      if (typeof routed.parameters.name === 'string' && routed.parameters.name.trim()) {
+        const input: Record<string, unknown> = { name: routed.parameters.name.trim() }
+        if (typeof routed.parameters.role === 'string') {
+          input.role = routed.parameters.role
+        }
+        return { tool: 'guidance.point', input }
+      }
+      return null
+    case 'press_control': {
+      const name = routed.parameters.name
+      if (typeof name !== 'string' || !name.trim()) {
+        return null
+      }
+      const input: Record<string, unknown> = { name: name.trim() }
+      if (typeof routed.parameters.role === 'string') {
+        input.role = routed.parameters.role
+      }
+      if (typeof routed.parameters.appName === 'string') {
+        input.appName = routed.parameters.appName
+      }
+      if (typeof routed.parameters.text === 'string') {
+        input.text = routed.parameters.text
+      }
+      return { tool: 'ui.press', input }
+    }
     default:
       return null
   }
@@ -527,6 +603,9 @@ function confirmLabel(tool: string): string {
   }
   if (tool === 'reminders.cancel') {
     return 'Cancel reminder'
+  }
+  if (tool === 'ui.press') {
+    return 'Press it'
   }
   return 'Continue'
 }

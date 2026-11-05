@@ -47,15 +47,8 @@ export function HomePanel({
   }
 
   return (
-    <div>
-      <p>What would you like to do?</p>
-      <button
-        type="button"
-        className="primary"
-        onClick={() => void window.companion.openPanel('chat')}
-      >
-        Chat
-      </button>
+    <div className="home">
+      <p className="lede">Apps, sites, and reminders. Chat is where you talk to Companion.</p>
       <section>
         <h2>Favorite apps</h2>
         {apps.length === 0 ? <p className="muted">No apps yet. Add one below.</p> : null}
@@ -262,7 +255,7 @@ function ReminderRow({
       {reminder.status === 'scheduled' ? (
         <button
           type="button"
-          className="icon-button"
+          className="quiet"
           aria-label={`Cancel ${reminder.title}`}
           onClick={() =>
             void window.companion
@@ -275,7 +268,7 @@ function ReminderRow({
       ) : (
         <button
           type="button"
-          className="icon-button"
+          className="quiet"
           onClick={() => void window.companion.completeReminder(reminder.id)}
         >
           Done
@@ -310,7 +303,7 @@ function FavoriteRow({
       </button>
       <button
         type="button"
-        className="icon-button"
+        className="quiet"
         aria-label={`Move ${title} up`}
         onClick={() => void window.companion.moveFavorite(favoriteId, 'up')}
       >
@@ -318,7 +311,7 @@ function FavoriteRow({
       </button>
       <button
         type="button"
-        className="icon-button"
+        className="quiet"
         aria-label={`Move ${title} down`}
         onClick={() => void window.companion.moveFavorite(favoriteId, 'down')}
       >
@@ -326,7 +319,7 @@ function FavoriteRow({
       </button>
       <button
         type="button"
-        className="icon-button"
+        className="quiet"
         aria-label={`Remove ${title}`}
         onClick={() => void window.companion.deleteFavorite(favoriteId)}
       >
