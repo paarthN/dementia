@@ -1,0 +1,22 @@
+{
+  "name": "companion",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Companion macOS desktop assistant",
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "npm run dev -w companion-desktop",
+    "build": "npm run build -w companion-desktop",
+    "typecheck": "npm run typecheck -w companion-desktop",
+    "test": "npm test -w companion-desktop",
+    "lint": "npm run lint -w companion-desktop",
+    "format": "npm run format -w companion-desktop",
+    "build:helper": "swift build -c release --arch arm64 --package-path native/CompanionMacHelper && codesign --force --sign - native/CompanionMacHelper/.build/release/CompanionMacHelper",
+    "assistant-proxy": "node backend/assistant-proxy/server.mjs"
+  }
+}

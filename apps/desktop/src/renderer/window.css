@@ -1,0 +1,28 @@
+:root {
+  color-scheme: light dark;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  line-height: 1.4;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  padding: 20px;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: 0 0 12px;
+}
+
+button {
+  font: inherit;
+  margin-top: 12px;
+  padding: 8px 12px;
+}
+
+ul {
+  padding-left: 1.1rem;
+}

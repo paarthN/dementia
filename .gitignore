@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node and Electron
+node_modules/
+out/
+.build/
+*.tsbuildinfo
+.eslintcache
+.env.*
+!.env.example
