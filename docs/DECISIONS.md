@@ -51,3 +51,9 @@ Provider tokens use the macOS Keychain through Electron `safeStorage`. Launch at
 Local builds use a stable ad-hoc signature so Accessibility permission survives rebuilds. Developer ID, notarization, and the installer format wait until Phase 9. No paid Apple Developer account is required to write the spec or to start Phase 0.
 
 **If this is wrong:** ad-hoc signatures still reset TCC on some macOS versions, and developers will re-grant Accessibility after every rebuild until Phase 9.
+
+## Computer-use agent
+
+The new multi-step agent extends the existing orchestrator, tool registry, and policy engine through one shared authorized executor. It does not get a second, weaker policy. Legacy chat and `/v1/interpret` stay. Model calls remain behind the existing proxy. Recorded 2026-11-05 during the expansion audit, before any agent code.
+
+**If this is wrong:** a parallel executor will drift from the current approval and cancellation rules, and a press that legacy chat still confirms could run from the new loop without that check.
