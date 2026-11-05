@@ -70,9 +70,20 @@ import {
   type OsBridge
 } from './services/osBridge'
 import { TaskOrchestrator, type TaskOutcome } from './services/taskOrchestrator'
+import { AgentSessionController } from './agent/AgentSessionController'
+import { AuthorizedToolExecutor } from './agent/AuthorizedToolExecutor'
+import {
+  cloudAgentConsent,
+  createAgentProviderClient,
+  runConsentedAgent
+} from './agent/AgentProviderClient'
+import { observationForAgent } from './agent/AgentPrompt'
 import { createNativeMacAdapter } from './agent/ports/NativeMacAdapter'
+import type { DesktopAutomationPort } from './agent/ports/DesktopAutomationPort'
 import { createObservationService, createObservingDesktopPort } from './agent/ObservationService'
 import { createRemoteAssistant } from './providers/assistant'
+import { createToolRegistry } from './services/toolRegistry'
+import type { AgentRunResult } from '../shared/computerAgent'
 import { listReminders } from './storage/reminders'
 import { devToolsAllowed, secureWebPreferences } from './windows/secureWebPreferences'
 import { loadRenderer } from './windows/loadRenderer'
@@ -99,8 +110,11 @@ export class Desktop {
   private readonly scheduler: ReturnType<typeof createReminderScheduler>
   private readonly bridge: OsBridge
   private readonly remote: ReturnType<typeof createRemoteAssistant>
+  private readonly agentClient: ReturnType<typeof createAgentProviderClient>
+  private readonly agentSession = new AgentSessionController()
   private readonly screenHelp: ReturnType<typeof createScreenCoordinator>
   private readonly orchestrator: TaskOrchestrator
+  private desktopPort: DesktopAutomationPort | null = null
 
   constructor(
     private readonly db: DatabaseSync,
@@ -139,10 +153,15 @@ export class Desktop {
       onActivity: () => this.publish()
     })
     const desktopPort = createObservingDesktopPort(desktopControl, observations)
+    this.desktopPort = desktopPort
     this.screenHelp.setDeveloperInspection(
       loadPreferences(this.db).privacy.developerInspection === true
     )
     this.remote = createRemoteAssistant({
+      origin: () => loadPreferences(this.db).privacy.assistantOrigin ?? '',
+      token: () => process.env.COMPANION_PROXY_TOKEN
+    })
+    this.agentClient = createAgentProviderClient({
       origin: () => loadPreferences(this.db).privacy.assistantOrigin ?? '',
       token: () => process.env.COMPANION_PROXY_TOKEN
     })
@@ -186,6 +205,55 @@ export class Desktop {
       return Promise.resolve(local)
     }
     return this.remote.interpret(text)
+  }
+
+  runComputerAgent(goal: string): Promise<AgentRunResult> {
+    const consented = cloudAgentConsent(loadPreferences(this.db).privacy)
+    return runConsentedAgent({
+      goal,
+      consented,
+      remote: this.agentClient,
+      executor: new AuthorizedToolExecutor(createToolRegistry()),
+      session: this.agentSession,
+      context: (signal) => ({
+        db: this.db,
+        run: this.run,
+        now: () => new Date(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        screenPermission: this.screenHelp.status().access === 'on',
+        allowedBundleIds: () =>
+          listFavorites(this.db)
+            .filter((favorite) => favorite.kind === 'application')
+            .map((favorite) => favorite.target),
+        signal,
+        reminders: this.scheduler,
+        screen: this.screenHelp,
+        desktop: this.desktopPort ?? undefined
+      }),
+      screenShare: () => this.screenShared(),
+      observe: (signal) => this.observeForAgent(signal)
+    })
+  }
+
+  private screenShared(): boolean {
+    const privacy = loadPreferences(this.db).privacy
+    return (
+      cloudAgentConsent(privacy) &&
+      privacy.cloudScreenAnalysisEnabled &&
+      !this.screenShareStopped &&
+      this.screenHelp.status().access === 'on'
+    )
+  }
+
+  private async observeForAgent(
+    signal: AbortSignal
+  ): Promise<ReturnType<typeof observationForAgent>> {
+    if (!this.desktopPort) {
+      return null
+    }
+    const sharing = this.screenShared()
+    const seen = await this.desktopPort.observe({ includeImage: sharing }, { signal })
+    return seen.observation ? observationForAgent(seen.observation, sharing) : null
   }
 
   start(): void {

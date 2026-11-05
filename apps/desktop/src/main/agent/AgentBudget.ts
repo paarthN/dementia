@@ -1,3 +1,5 @@
+export { maxModelImageChars } from '../../shared/computerAgent'
+
 export interface AgentBudget {
   maxActions: number
   maxModelTurns: number

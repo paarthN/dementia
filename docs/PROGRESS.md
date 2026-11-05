@@ -4,7 +4,7 @@ Living status for Companion. Update this file at the end of each phase with comm
 
 **Spec version:** 1.1 — 2026-11-04, macOS-first  
 **Last updated:** 2026-11-05  
-**Product status:** Phases 0–7 are in the repo. Chat can use demo mode on this Mac, or a cloud assistant through a server you run. Phase 8 was not started. A separate computer-use track has finished its Phase 3 window pictures. See [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
+**Product status:** Phases 0–7 are in the repo. Chat can use demo mode on this Mac, or a cloud assistant through a server you run. Phase 8 was not started. A separate computer-use track can ask a cloud model for one tool at a time. Chat does not start that loop yet. See [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
 
 ## Where to read next
 
@@ -66,6 +66,10 @@ Re-verified on 2026-11-04 before Phase 0 was treated as ready.
 | macOS helper verified | Yes. `system.ping` and real Accessibility reads succeeded. See the Phase 5 log for what was not captured. |
 
 ## Log
+
+### 2026-11-05 — Computer-use Phase 4
+
+The assistant proxy has `POST /v1/agent/turn`. It asks the Responses API for at most one tool, then returns the name and arguments. It does not click, type, or capture. The desktop runs the tool only after the existing policy check, and only when Settings has cloud mode and consent. A model sentence that says the task is complete is not treated as proof. No live model was called. The checks are in [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
 
 ### 2026-11-05 — Computer-use Phase 3
 

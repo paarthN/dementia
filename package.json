@@ -18,5 +18,8 @@
     "format": "npm run format -w companion-desktop",
     "build:helper": "swift build -c release --arch arm64 --package-path native/CompanionMacHelper && codesign --force --sign - native/CompanionMacHelper/.build/release/CompanionMacHelper",
     "assistant-proxy": "node backend/assistant-proxy/server.mjs"
+  },
+  "dependencies": {
+    "openai": "7.52.0"
   }
 }

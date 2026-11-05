@@ -1,15 +1,18 @@
 import { canonicalJson } from '../../shared/agent'
 import {
   agentProgressSchema,
-  safeObservationSchema,
+  safeToolResultSchema,
   type ActionOutcome,
   type AgentProgress,
   type AgentRunResult,
+  type AgentTurn,
   type ComputerAgentEvent,
   type ComputerAgentState,
   type FakeAgentChoice,
-  type SafeObservation
+  type SafeObservation,
+  type SafeToolResult
 } from '../../shared/computerAgent'
+import { prepareModelObservation, redactSecretText } from './AgentPrompt'
 import type { ToolContext } from '../services/toolRegistry'
 import {
   defaultAgentBudget,
@@ -22,7 +25,11 @@ import { AgentSessionController } from './AgentSessionController'
 import { transitionAgentState } from './AgentStateMachine'
 import { AuthorizedToolExecutor, type AuthorizedCall } from './AuthorizedToolExecutor'
 
-export class FakeAgentProvider {
+export interface AgentProvider {
+  next(turn: AgentTurn, signal: AbortSignal): Promise<FakeAgentChoice>
+}
+
+export class FakeAgentProvider implements AgentProvider {
   private index = 0
 
   constructor(private readonly script: readonly FakeAgentChoice[]) {}
@@ -31,7 +38,7 @@ export class FakeAgentProvider {
     return this.index
   }
 
-  async next(signal: AbortSignal): Promise<FakeAgentChoice> {
+  async next(_turn: AgentTurn, signal: AbortSignal): Promise<FakeAgentChoice> {
     if (signal.aborted) {
       return { type: 'refusal', text: 'I stopped.' }
     }
@@ -43,20 +50,23 @@ export class FakeAgentProvider {
 
 export interface AgentRunOptions {
   goal: string
-  provider: FakeAgentProvider
+  provider: AgentProvider
   executor: AuthorizedToolExecutor
   session: AgentSessionController
   context: (signal: AbortSignal) => ToolContext
   now?: () => Date
   budget?: AgentBudget
-  observe?: () => SafeObservation
+  sessionTtlMs?: number
+  screenShare?: () => boolean
+  observe?: (signal: AbortSignal) => SafeObservation | null | Promise<SafeObservation | null>
 }
 
-export async function runFakeAgent(options: AgentRunOptions): Promise<AgentRunResult> {
+export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult> {
   const now = options.now ?? (() => new Date())
   const budget = options.budget ?? defaultAgentBudget
   const session = options.session
-  const begun = session.begin(options.goal)
+  const startedAt = now().getTime()
+  const begun = session.begin(options.goal, startedAt + (options.sessionTtlMs ?? budget.deadlineMs))
   if (!begun.ok) {
     return result(null, 'failed', begun.summary, [], 'failed')
   }
@@ -68,7 +78,8 @@ export async function runFakeAgent(options: AgentRunOptions): Promise<AgentRunRe
   let actions = 0
   let turns = 0
   let verified = false
-  const startedAt = now().getTime()
+  let continuation: AgentTurn['continuation']
+  let lastToolResult: SafeToolResult | undefined
   const note = (text: string): void => {
     summary = text
     const entry = { state, summary: text }
@@ -98,8 +109,14 @@ export async function runFakeAgent(options: AgentRunOptions): Promise<AgentRunRe
         note('I stopped. Nothing else will run for that request.')
         return result(begun.id, state, summary, progress, 'cancelled')
       }
+      const clock = now().getTime()
+      if (!session.owns(begun.id, clock)) {
+        move('limit')
+        note('This request expired, so I stopped.')
+        return result(begun.id, state, summary, progress, 'no_change')
+      }
       if (
-        overDeadline(budget, startedAt, now().getTime()) ||
+        overDeadline(budget, startedAt, clock) ||
         overTurnBudget(budget, turns) ||
         overActionBudget(budget, actions)
       ) {
@@ -108,7 +125,8 @@ export async function runFakeAgent(options: AgentRunOptions): Promise<AgentRunRe
         return result(begun.id, state, summary, progress, 'no_change')
       }
 
-      const observation = observed(options, now)
+      const screenShare = options.screenShare?.() ?? false
+      const observation = await observed(options, now, begun.signal, screenShare)
       if (!observation) {
         move('fail')
         note('I could not read a usable observation.')
@@ -119,7 +137,30 @@ export async function runFakeAgent(options: AgentRunOptions): Promise<AgentRunRe
       }
       note('Choosing the next step.')
       turns += 1
-      const choice = await options.provider.next(begun.signal)
+      let choice: FakeAgentChoice
+      try {
+        choice = await options.provider.next(
+          {
+            taskId: begun.id,
+            goal: options.goal,
+            stepNumber: turns,
+            summary,
+            observation,
+            screenShare,
+            ...(continuation && lastToolResult ? { continuation, lastToolResult } : {})
+          },
+          begun.signal
+        )
+      } catch {
+        if (begun.signal.aborted) {
+          move('stop')
+          note('I stopped. Nothing else will run for that request.')
+          return result(begun.id, state, summary, progress, 'cancelled')
+        }
+        move('fail')
+        note("I couldn't reach the assistant service.")
+        return result(begun.id, state, summary, progress, 'failed')
+      }
       if (begun.signal.aborted) {
         move('stop')
         note('I stopped. Nothing else will run for that request.')
@@ -182,6 +223,10 @@ export async function runFakeAgent(options: AgentRunOptions): Promise<AgentRunRe
         return result(begun.id, state, summary, progress, 'failed')
       }
 
+      const nextContinuation =
+        choice.responseId && choice.callId
+          ? { responseId: choice.responseId, callId: choice.callId }
+          : undefined
       if (!move('begin_execution')) {
         return result(begun.id, state, summary, progress, 'failed')
       }
@@ -214,6 +259,11 @@ export async function runFakeAgent(options: AgentRunOptions): Promise<AgentRunRe
       }
       const passed =
         report.result.status === 'succeeded' && report.result.verification?.passed === true
+      const recorded = boundResult(choice.tool, report.result.status, report.result.summary, passed)
+      if (nextContinuation && recorded) {
+        continuation = nextContinuation
+        lastToolResult = recorded
+      }
       if (!passed) {
         failures.set(key, priorFailures + 1)
         if (!move('step_failed')) {
@@ -235,17 +285,42 @@ export async function runFakeAgent(options: AgentRunOptions): Promise<AgentRunRe
   }
 }
 
-function observed(options: AgentRunOptions, now: () => Date): SafeObservation | null {
-  const value = options.observe
-    ? options.observe()
-    : {
-        snapshotId: 'fixture-snapshot',
-        appName: 'TextEdit',
-        capturedAtUtc: now().toISOString()
-      }
-  const parsed = safeObservationSchema.safeParse(value)
+async function observed(
+  options: AgentRunOptions,
+  now: () => Date,
+  signal: AbortSignal,
+  screenShare: boolean
+): Promise<SafeObservation | null> {
+  try {
+    const value = options.observe
+      ? await options.observe(signal)
+      : {
+          snapshotId: 'fixture-snapshot',
+          appName: 'TextEdit',
+          capturedAtUtc: now().toISOString()
+        }
+    return prepareModelObservation(value, screenShare)
+  } catch {
+    return null
+  }
+}
+
+function boundResult(
+  tool: string,
+  status: string,
+  summary: string,
+  verified: boolean
+): SafeToolResult | null {
+  const parsed = safeToolResultSchema.safeParse({
+    tool,
+    status: status.slice(0, 40),
+    summary: redactSecretText(summary).trim().slice(0, 500) || 'The action finished.',
+    verified
+  })
   return parsed.success ? parsed.data : null
 }
+
+export const runFakeAgent = runAgent
 
 function authorizedCall(
   taskId: string,
@@ -267,7 +342,7 @@ function authorizedCall(
     signal,
     timeoutMs: 15_000,
     deadlineAtMs: now().getTime() + budget.deadlineMs,
-    taskOwned: options.session.owns(taskId),
+    taskOwned: options.session.owns(taskId, now().getTime()),
     context
   }
 }

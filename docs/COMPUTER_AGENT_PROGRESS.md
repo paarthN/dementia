@@ -2,9 +2,9 @@
 
 Audit and implementation log for [AGENT_EXPANSION_SPEC.md](AGENT_EXPANSION_SPEC.md).
 
-**Phase:** 3 — window screenshots and observation.  
+**Phase:** 4 — cloud model loop.  
 **Date:** 2026-11-05  
-**Next step:** Wait for approval. Then Phase 4 only. No Playwright.
+**Next step:** Wait for approval. Then Phase 5 only.
 
 ## Baseline
 
@@ -179,4 +179,36 @@ An earlier call in the same session returned `capture_unavailable` and did not k
 **Not verified:** The running Electron window was not opened, so the banner was not seen by eye. The screen-use flag was checked in a unit test. A second live capture after the successful one did not find TextEdit before the test timed out.  
 **Blockers:** None for a review of Phase 3.  
 **Next phase:** Phase 4 after approval. Do not start it in this session. No picture has been sent to a model.
+
+## Phase 4
+
+`POST /v1/agent/turn` is on the same local proxy as `/v1/interpret`. The desktop does not contain the OpenAI key or the `openai` package. The proxy uses `openai` 7.52.0 and `client.responses.create`. The model id comes from `COMPANION_AGENT_MODEL`. There is no default model. One model turn may return one function call or a final sentence. `parallel_tool_calls` is false. A second function call, a shell call, or a name outside the registry is rejected and not run. The next turn sends `previous_response_id` and a `function_call_output` with the same `call_id`.
+
+The main process asks the proxy only when cloud mode, a saved consent time, and a server address are all set. Demo chat still uses the local router. Cloud chat still uses `/v1/interpret`. `Desktop.runComputerAgent` is the new loop. The chat box does not call it yet. The loop observes, asks for one step, checks policy, runs the tool locally, then observes again. A final sentence is `success_verified` only after a tool result already verified. Screen text is sent inside `<untrusted_screen>`. A page that says to call `payments.transfer` does not run that tool.
+
+A picture is attached as `input_image` with `detail: "low"` only when cloud screen analysis is on, screen access is on, Stop sharing is off, the picture is under 180,000 base64 characters, and the window has no password or protected control. Otherwise the picture is left out. Password-like text is replaced with `[redacted]` before it leaves the machine. OpenAI keeps the response for at least 30 days because continuation uses `previous_response_id`. The proxy does not write the picture to disk.
+
+The action budget remains 20. The model-turn budget remains 30. The task deadline remains 5 minutes. A session that passes its deadline does not start another tool. Stop during the model request aborts the wait, and a tool call that arrives after that is ignored.
+
+### Checks
+
+| Command | Result |
+|---|---|
+| `npm run typecheck` | Passed. |
+| `npm run lint` | Passed. |
+| `npm test` | Passed. 128 tests, 6 skipped. The new skip is the paid model smoke test unless `COMPANION_AGENT_SMOKE=1`, `ASSISTANT_API_KEY`, and `COMPANION_AGENT_MODEL` are all set. The other skips are unchanged. |
+| `npm run build` | Passed. Production bundle only. |
+| Paid model smoke | Not run. Those three environment values were unset. |
+
+### Cost and privacy
+
+No paid call was made, so there is no measured token cost. A task can make at most 30 model requests and 20 actions. Pictures use low detail and are capped. The key stays in the proxy process. The desktop source does not import `openai` and does not read `ASSISTANT_API_KEY`.
+
+### Phase 4 report
+
+**Implemented:** Authenticated `/v1/agent/turn`, one serialized tool request, call-id continuation, the desktop client, and the consent gate. Legacy `/v1/interpret` still answers.  
+**Verified:** The commands above. Unit tests covered a 3-action mock conversation, call-id continuity, a forbidden tool, secret and image redaction, a fake page instruction, an expired session, Stop during the model wait, the 20-action budget, and `/v1/interpret`.  
+**Not verified:** A live model. Whether the configured model accepts an image and a function tool. The chat box does not start this loop. No picture was sent to a model.  
+**Blockers:** None for a review of Phase 4. A live check needs an explicit model id, a proxy key, and `COMPANION_AGENT_SMOKE=1`.  
+**Next phase:** Phase 5 after approval. Do not start it in this session.
 
