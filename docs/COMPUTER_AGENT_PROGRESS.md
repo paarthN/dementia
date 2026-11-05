@@ -1,10 +1,10 @@
 # Computer-use agent progress
 
-Audit for the expansion in [AGENT_EXPANSION_SPEC.md](AGENT_EXPANSION_SPEC.md). This file does not mean the agent is implemented.
+Audit and implementation log for [AGENT_EXPANSION_SPEC.md](AGENT_EXPANSION_SPEC.md).
 
-**Phase:** 0 — baseline audit. No product code was changed.  
+**Phase:** 1 — shared executor, task state, and a fake agent.  
 **Date:** 2026-11-05  
-**Next step:** Phase 1, only after approval. Shared executor, task state, and a fake agent. No OpenAI SDK and no Playwright.
+**Next step:** Phase 2, only after approval. Native window and Accessibility tools. No OpenAI SDK and no Playwright.
 
 ## Baseline
 
@@ -76,3 +76,36 @@ Do not add `openai`, Playwright, new Swift methods, or `/v1/agent/turn` in Phase
 **Not verified:** Live TextEdit control, a fresh screenshot, Stop during a real helper call, and the three skipped macOS tests.  
 **Blockers:** None for Phase 1. The helper command must be run outside a sandbox that blocks `sandbox-exec`.  
 **Next phase:** Wait for approval. Then Phase 1 only.
+
+## Phase 1
+
+Legacy chat still enters through `TaskOrchestrator`. Every tool call from that path and from `runFakeAgent` goes through `AuthorizedToolExecutor`, which calls the existing `decidePolicy` before `toolRegistry`. There is no second policy.
+
+Cancellation now aborts the task's `AbortSignal`. If the tool promise settles with a result, that result is used and no later step starts. If the wait ends by timeout or abort while the promise is still pending, or the helper rejects with its own timeout or abort, the result is `uncertain_after_timeout`. The executor then refuses another tool call. A `Promise.race` timeout is not reported as proof that the native action stopped.
+
+The fake walkthrough in `tests/computerAgent.test.ts` is:
+
+1. The script asks for `apps.open` of TextEdit. The executor runs the existing open path against a fake command runner. The recorded command is `open -b com.apple.TextEdit`. No real `/usr/bin/open` runs.
+2. The runner inserts a fixture observation (`snapshotId: fixture-snapshot`). It does not capture the screen.
+3. The script asks for one allowed `test.note` action. The executor allows it because the tool is registered as R1 and the task id matches.
+4. The tool result includes `verification.passed: true`. The runner records that check.
+5. The script says the note is ready. The run is `completed` with `success_verified` only because step 4 passed. A final line with no verified action stays `changed_but_unverified`.
+
+No real autonomous Mac action exists yet. The fake provider never calls OpenAI. Playwright is not installed.
+
+### Checks
+
+| Command | Result |
+|---|---|
+| `npm run typecheck` | Passed after the report-summary type fix. |
+| `npm run lint` | Passed. |
+| `npm test` | Passed. 93 tests, 3 skipped. The skips are the same unset `COMPANION_REAL_LAUNCH` and `COMPANION_HANDS_ON` files. |
+| `npm run build` | Passed. Production bundle only. |
+
+### Phase 1 report
+
+**Implemented:** Shared executor, state machine, one-run session, budget stops, and the scripted fake agent.  
+**Verified:** Unit tests for unknown tools, R4, stale and mismatched approvals, wrong task id, cancel before a call, abort and timeout during a hanging tool, one in-flight action, action budget, repeated identical failures, and the fake TextEdit sequence. Existing chat tests still pass.  
+**Not verified:** A live TextEdit press, a fresh screenshot, and Stop during a real helper call.  
+**Blockers:** None for a review of Phase 1.  
+**Next phase:** Phase 2 after approval.
