@@ -69,3 +69,7 @@ The cloud agent calls OpenAI through the existing proxy. `openai` 7.52.0 is inst
 Proxy checks live in `apps/desktop/tests/agentTurn.test.ts` so `npm test` runs them. A separate `agent.test.mjs` runner was not added.
 
 **If this is wrong:** a model id that cannot see images or call functions will fail the opt-in smoke test, and storing responses at OpenAI is more retention than a stateless request. Chat still does not start this loop.
+
+The agent browser uses Playwright 1.65.0 in `companion-desktop`. It launches Playwright's Chromium, headed, with a profile at `agent-browser` inside the app's user data. Launch options omit `channel` and the code does not call `connectOverCDP`. Downloads are off. An address must be `http` or `https`, and a DNS answer that includes a private, loopback, or link-local address is refused. Redirects are decided from the `Location` header before Chromium follows them. A test may pass one exact `http://127.0.0.1:port` or `http://localhost:port` origin. A page picture is included only when that tool call sets consent, and the bytes stay out of the tool result. Recorded 2026-11-05.
+
+**If this is wrong:** Chromium still has to be installed with `npx playwright install chromium` on a development machine, and the app does not yet carry that binary. Chat still does not start this loop.

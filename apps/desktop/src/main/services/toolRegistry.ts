@@ -14,7 +14,9 @@ import {
   type CommandRunner
 } from './launcher'
 import type { ReminderPort } from './reminderScheduler'
+import type { BrowserAutomationPort } from '../agent/ports/BrowserAutomationPort'
 import type { DesktopAutomationPort } from '../agent/ports/DesktopAutomationPort'
+import { browserToolDefinitions } from '../agent/tools/browserTools'
 import { desktopToolDefinitions } from '../agent/tools/desktopTools'
 
 export const blockedToolNames = [
@@ -24,7 +26,9 @@ export const blockedToolNames = [
   'readAnyFile',
   'sendAnyHttpRequest',
   'shell',
-  'exec'
+  'exec',
+  'page.evaluate',
+  'browser.evaluate'
 ] as const
 
 const settingsCopy: Record<SystemSettingsSection, string> = {
@@ -66,6 +70,7 @@ export interface ToolContext {
     }) => Promise<ToolResult>
   }
   desktop?: DesktopAutomationPort
+  browser?: BrowserAutomationPort
 }
 
 export interface ToolDefinition {
@@ -122,7 +127,7 @@ function isBlockedName(name: string): boolean {
 }
 
 function builtinTools(): ToolDefinition[] {
-  return [...coreTools(), ...desktopToolDefinitions()]
+  return [...coreTools(), ...desktopToolDefinitions(), ...browserToolDefinitions()]
 }
 
 function coreTools(): ToolDefinition[] {

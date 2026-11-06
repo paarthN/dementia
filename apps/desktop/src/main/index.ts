@@ -21,8 +21,16 @@ app.whenReady().then(() => {
   registerIpc(desktop)
   desktop.start()
 
-  app.on('will-quit', () => {
-    desktop.stop()
+  let quitting = false
+  app.on('will-quit', (event) => {
+    if (quitting) {
+      return
+    }
+    quitting = true
+    event.preventDefault()
+    void desktop.stop().finally(() => {
+      app.quit()
+    })
   })
 
   app.on('activate', () => {

@@ -80,6 +80,8 @@ import {
 import { observationForAgent } from './agent/AgentPrompt'
 import { createNativeMacAdapter } from './agent/ports/NativeMacAdapter'
 import type { DesktopAutomationPort } from './agent/ports/DesktopAutomationPort'
+import type { BrowserAutomationPort } from './agent/ports/BrowserAutomationPort'
+import { createPlaywrightAdapter } from './agent/ports/PlaywrightAdapter'
 import { createObservationService, createObservingDesktopPort } from './agent/ObservationService'
 import { createRemoteAssistant } from './providers/assistant'
 import { createToolRegistry } from './services/toolRegistry'
@@ -115,6 +117,7 @@ export class Desktop {
   private readonly screenHelp: ReturnType<typeof createScreenCoordinator>
   private readonly orchestrator: TaskOrchestrator
   private desktopPort: DesktopAutomationPort | null = null
+  private readonly browserPort: BrowserAutomationPort
 
   constructor(
     private readonly db: DatabaseSync,
@@ -154,6 +157,10 @@ export class Desktop {
     })
     const desktopPort = createObservingDesktopPort(desktopControl, observations)
     this.desktopPort = desktopPort
+    this.browserPort = createPlaywrightAdapter({
+      profileDir: join(app.getPath('userData'), 'agent-browser'),
+      headed: true
+    })
     this.screenHelp.setDeveloperInspection(
       loadPreferences(this.db).privacy.developerInspection === true
     )
@@ -173,6 +180,7 @@ export class Desktop {
       screenPermission: () => this.screenHelp.status().access === 'on',
       screen: this.screenHelp,
       desktop: desktopPort,
+      browser: this.browserPort,
       interpret: (text) => this.interpret(text)
     })
   }
@@ -228,7 +236,8 @@ export class Desktop {
         signal,
         reminders: this.scheduler,
         screen: this.screenHelp,
-        desktop: this.desktopPort ?? undefined
+        desktop: this.desktopPort ?? undefined,
+        browser: this.browserPort
       }),
       screenShare: () => this.screenShared(),
       observe: (signal) => this.observeForAgent(signal)
@@ -302,7 +311,7 @@ export class Desktop {
     return readCapabilities(this.helperRunning)
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.guideTimer) {
       clearInterval(this.guideTimer)
       this.guideTimer = null
@@ -310,6 +319,7 @@ export class Desktop {
     this.closeOverlay()
     this.screenHelp.revoke()
     this.screenHelp.close()
+    await this.browserPort.close()
   }
 
   openPanel(view: PanelView = 'home'): void {

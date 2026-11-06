@@ -22,7 +22,13 @@ function externalizeReactPreamble(): Plugin {
 }
 
 export default defineConfig({
-  main: {},
+  main: {
+    build: {
+      rollupOptions: {
+        external: ['playwright', 'playwright-core']
+      }
+    }
+  },
   preload: {},
   renderer: {
     build: {

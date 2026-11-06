@@ -1,4 +1,8 @@
 import { canonicalJson, type RiskLevel } from '../../shared/agent'
+import {
+  isConsequentialBrowserControl,
+  isSensitiveBrowserField
+} from '../agent/ports/browserSafety'
 import { pressPreview } from '../../shared/controls'
 import type { ToolRegistry } from './toolRegistry'
 
@@ -72,6 +76,22 @@ export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): Po
     }
   }
 
+  if (
+    (request.tool === 'browser.fill' || request.tool === 'browser.click') &&
+    isSensitiveBrowserField({
+      name: textField(request.input, 'name'),
+      role: textField(request.input, 'role'),
+      inputType: textField(request.input, 'inputType'),
+      autocomplete: textField(request.input, 'autocomplete')
+    })
+  ) {
+    return {
+      effect: 'deny',
+      risk: 'R4',
+      reason: "I can't type into or press a password or security code."
+    }
+  }
+
   if (screenTools.has(request.tool) && !request.screenPermission) {
     return {
       effect: 'permission',
@@ -107,6 +127,19 @@ export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): Po
       effect: 'confirm',
       risk,
       reason: desktopActionPreview(request.tool, request.input)
+    }
+  }
+
+  if (
+    (request.tool === 'browser.click' ||
+      request.tool === 'browser.fill' ||
+      request.tool === 'browser.press') &&
+    !approvalMatches(request)
+  ) {
+    return {
+      effect: 'confirm',
+      risk,
+      reason: browserActionPreview(request.tool, request.input)
     }
   }
 
@@ -160,6 +193,34 @@ export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): Po
   }
 
   return { effect: 'allow', risk }
+}
+
+function browserActionPreview(tool: string, input: Record<string, unknown>): string {
+  const name = controlName(input)
+  if (tool === 'browser.fill') {
+    return `I am about to type into ${name}. Type it?`
+  }
+  if (tool === 'browser.press') {
+    const chord = textField(input, 'chord').slice(0, 40) || 'a key'
+    return `I am about to press the ${chord} key. Press it?`
+  }
+  if (isConsequentialBrowserControl(name)) {
+    return `I am about to press ${name}. This can send or change something. Press it?`
+  }
+  return `I am about to press ${name}. Press it?`
+}
+
+function controlName(input: Record<string, unknown>): string {
+  return (
+    textField(input, 'name')
+      .replace(/[\r\n]+/g, ' ')
+      .trim()
+      .slice(0, 80) || 'that control'
+  )
+}
+
+function textField(input: Record<string, unknown>, key: string): string {
+  return typeof input[key] === 'string' ? input[key] : ''
 }
 
 function desktopActionPreview(tool: string, input: Record<string, unknown>): string {

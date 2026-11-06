@@ -2,9 +2,9 @@
 
 Audit and implementation log for [AGENT_EXPANSION_SPEC.md](AGENT_EXPANSION_SPEC.md).
 
-**Phase:** 4 — cloud model loop.  
+**Phase:** 5 — managed browser.  
 **Date:** 2026-11-05  
-**Next step:** Wait for approval. Then Phase 5 only.
+**Next step:** Wait for approval. Then Phase 6 only.
 
 ## Baseline
 
@@ -211,4 +211,30 @@ No paid call was made, so there is no measured token cost. A task can make at mo
 **Not verified:** A live model. Whether the configured model accepts an image and a function tool. The chat box does not start this loop. No picture was sent to a model.  
 **Blockers:** None for a review of Phase 4. A live check needs an explicit model id, a proxy key, and `COMPANION_AGENT_SMOKE=1`.  
 **Next phase:** Phase 5 after approval. Do not start it in this session.
+
+## Phase 5
+
+Agent Browser is a separate Chromium window. `playwright` 1.65.0 is a dependency of `companion-desktop`. The desktop launches Playwright's Chromium with `launchPersistentContext`. The profile directory is `agent-browser` under the app's user data, mode `0700`. The window is headed. The launch options do not set `channel` and the code does not call `connectOverCDP`, so this does not attach to Safari or the user's Chrome profile. Downloads are off. There is no `page.evaluate` tool.
+
+The tools are `browser.launch`, `browser.open`, `browser.observe`, `browser.click`, `browser.fill`, `browser.press`, `browser.scroll`, `browser.back`, `browser.listTabs`, `browser.selectTab`, and `browser.close`. They go through `AuthorizedToolExecutor` and `decidePolicy`. Reading the page is R0. Opening a page, scrolling, going back, and switching a tab in this browser are R1. Click, fill, and key press are R2 and wait for approval. A password, passcode, or one-time-code field is denied. A button named Submit, Send, Buy, Delete, Pay, or Transfer asks with a warning. Fill types into the field and does not submit the form. Two controls with the same name are not used. A snapshot expires after 3 seconds. Page text is untrusted. A picture is taken only when that call sets `consent`, and the tool result keeps `imageIncluded` without the bytes.
+
+Addresses must be `http` or `https`. Loopback, private, and link-local addresses are refused, including a name that resolves to one. A redirect is checked from the `Location` header before Chromium follows it. Tests may allow one exact `http://127.0.0.1:port` or `http://localhost:port` origin. That exception does not cover a public site or a different port. Development needs `npx playwright install chromium`. Packaging that binary is still Phase 8. Chat still does not start this loop.
+
+### Checks
+
+| Command | Result |
+|---|---|
+| `npm run typecheck` | Passed. |
+| `npm run lint` | Passed. |
+| `npm test` | Passed. 142 tests, 7 skipped. The new skip is `tests/browserSmoke.test.ts` unless `COMPANION_BROWSER_SMOKE=1`. The other skips are unchanged. |
+| `npm run build` | Passed. Production bundle only. Playwright stays an external import. |
+| `COMPANION_BROWSER_SMOKE=1 npx vitest run tests/browserSmoke.test.ts` from `apps/desktop` | Passed. 1 test. Headed Chromium opened the local fixture, the page was marked Agent Browser, and the window was closed. I did not watch the window. |
+
+### Phase 5 report
+
+**Implemented:** A headed Agent Browser with its own profile, page reading, role and label actions, navigation checks, and cleanup.  
+**Verified:** The commands above. Unit tests covered a library search filled without submit, one named control, two Save buttons with no click, a password field left empty, a private redirect, an external tab, Stop during a hanging navigation, screenshot consent, and a stale snapshot.  
+**Not verified:** The chat box does not start this loop. A live model was not asked to use these tools. The Chromium binary is not packaged in the app. I did not look at the headed window.  
+**Blockers:** None for a review of Phase 5. A machine needs `npx playwright install chromium` before Agent Browser can open.  
+**Next phase:** Phase 6 after approval. Do not start it in this session. Approval still uses the name sent with the action. The adapter then refuses a password field it can see. A later pass should recheck the live control when the approval is accepted.
 
