@@ -1,4 +1,5 @@
 import { canonicalJson, type RiskLevel } from '../../shared/agent'
+import { classifyControlLabel } from '../agent/security/ControlEffect'
 import {
   isConsequentialBrowserControl,
   isSensitiveBrowserField
@@ -27,6 +28,8 @@ export type PolicyDecision =
   | { effect: 'confirm'; risk: RiskLevel; reason: string }
   | { effect: 'permission'; risk: RiskLevel; reason: string }
   | { effect: 'deny'; risk: RiskLevel; reason: string }
+
+const clickTools = new Set(['ui.press', 'desktop.clickElement', 'browser.click'])
 
 const screenTools = new Set([
   'screen.inspect',
@@ -92,6 +95,27 @@ export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): Po
     }
   }
 
+  if (clickTools.has(request.tool)) {
+    if (request.input.protected === true) {
+      return {
+        effect: 'deny',
+        risk: 'R4',
+        reason: "I can't work with that secure screen."
+      }
+    }
+    const label = classifyControlLabel({
+      name: textField(request.input, 'name'),
+      contextText: textField(request.input, 'contextText')
+    })
+    if (label.kind === 'sensitive' || label.kind === 'consequential') {
+      return {
+        effect: 'deny',
+        risk: 'R4',
+        reason: label.reason
+      }
+    }
+  }
+
   if (screenTools.has(request.tool) && !request.screenPermission) {
     return {
       effect: 'permission',
@@ -106,6 +130,20 @@ export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): Po
       effect: 'deny',
       risk,
       reason: 'That needs approval for this exact action, and there is no matching approval.'
+    }
+  }
+
+  if (clickTools.has(request.tool)) {
+    const label = classifyControlLabel({
+      name: textField(request.input, 'name'),
+      contextText: textField(request.input, 'contextText')
+    })
+    if (label.kind === 'ambiguous' && !approvalMatches(request)) {
+      return {
+        effect: 'confirm',
+        risk,
+        reason: label.reason
+      }
     }
   }
 

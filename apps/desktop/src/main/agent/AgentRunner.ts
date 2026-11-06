@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { canonicalJson } from '../../shared/agent'
 import {
   agentProgressSchema,
@@ -24,6 +25,7 @@ import {
 import { AgentSessionController } from './AgentSessionController'
 import { transitionAgentState } from './AgentStateMachine'
 import { AuthorizedToolExecutor, type AuthorizedCall } from './AuthorizedToolExecutor'
+import { consumeHeldApproval, createHeldApproval } from './security/ActionApproval'
 
 export interface AgentProvider {
   next(turn: AgentTurn, signal: AbortSignal): Promise<FakeAgentChoice>
@@ -59,6 +61,13 @@ export interface AgentRunOptions {
   sessionTtlMs?: number
   screenShare?: () => boolean
   observe?: (signal: AbortSignal) => SafeObservation | null | Promise<SafeObservation | null>
+  waitForApproval?: (
+    approval: ReturnType<typeof createHeldApproval>,
+    signal: AbortSignal
+  ) => Promise<
+    | { approved: true; liveTarget: ReturnType<typeof createHeldApproval>['target'] }
+    | { approved: false }
+  >
 }
 
 export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult> {
@@ -123,6 +132,20 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         move('limit')
         note('I reached the limit for this task, so I stopped.')
         return result(begun.id, state, summary, progress, 'no_change')
+      }
+      if (session.isPaused(begun.id)) {
+        if (!move('pause')) {
+          return result(begun.id, state, summary, progress, 'failed')
+        }
+        const gate = await session.waitIfPaused(begun.id, begun.signal)
+        if (gate === 'stopped' || begun.signal.aborted) {
+          move('stop')
+          note('I stopped. Nothing else will run for that request.')
+          return result(begun.id, state, summary, progress, 'cancelled')
+        }
+        if (!move('resume')) {
+          return result(begun.id, state, summary, progress, 'failed')
+        }
       }
 
       const screenShare = options.screenShare?.() ?? false
@@ -190,34 +213,90 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         return result(begun.id, state, summary, progress, 'failed')
       }
 
-      const call = authorizedCall(begun.id, begun.signal, choice, options, now)
+      let call = authorizedCall(begun.id, begun.signal, choice, options, now)
       const preview = options.executor.preflight(call)
+      let armed = false
       if (preview.kind === 'confirm') {
-        move('need_confirmation')
+        if (!options.waitForApproval) {
+          move('need_confirmation')
+          note(preview.summary)
+          return result(begun.id, state, summary, progress, 'needs_approval')
+        }
+        const held = createHeldApproval({
+          taskId: begun.id,
+          stepId: randomUUID(),
+          tool: choice.tool,
+          args: choice.args,
+          now: now(),
+          ttlMs: 10 * 60 * 1000
+        })
+        if (!move('need_confirmation')) {
+          return result(begun.id, state, summary, progress, 'failed')
+        }
         note(preview.summary)
-        return result(begun.id, state, summary, progress, 'needs_approval')
+        const decision = await options.waitForApproval(held, begun.signal)
+        if (begun.signal.aborted) {
+          move('stop')
+          note('I stopped. Nothing else will run for that request.')
+          return result(begun.id, state, summary, progress, 'cancelled')
+        }
+        const gate = await session.waitIfPaused(begun.id, begun.signal)
+        if (gate === 'stopped' || begun.signal.aborted) {
+          move('stop')
+          note('I stopped. Nothing else will run for that request.')
+          return result(begun.id, state, summary, progress, 'cancelled')
+        }
+        if (!decision.approved) {
+          move('fail')
+          note('I did not get a matching confirmation.')
+          return result(begun.id, state, summary, progress, 'failed')
+        }
+        const consumed = consumeHeldApproval(held, {
+          approvalId: held.approvalId,
+          now: now(),
+          liveTarget: decision.liveTarget
+        })
+        if (!consumed.ok) {
+          move('fail')
+          note(consumed.reason)
+          return result(begun.id, state, summary, progress, 'failed')
+        }
+        if (!move('approved')) {
+          return result(begun.id, state, summary, progress, 'failed')
+        }
+        call = {
+          ...call,
+          approval: {
+            taskId: begun.id,
+            tool: choice.tool,
+            payloadJson: held.payloadJson,
+            expiresAtUtc: held.expiresAtUtc
+          },
+          liveTarget: decision.liveTarget
+        }
+        armed = true
       }
-      if (preview.kind === 'permission') {
+      if (!armed && preview.kind === 'permission') {
         move('need_permission')
         note(preview.summary)
         return result(begun.id, state, summary, progress, 'needs_permission')
       }
-      if (preview.kind === 'cancelled') {
+      if (!armed && preview.kind === 'cancelled') {
         move('stop')
         note(preview.summary)
         return result(begun.id, state, summary, progress, 'cancelled')
       }
-      if (preview.kind === 'limited') {
+      if (!armed && preview.kind === 'limited') {
         move('limit')
         note(preview.summary)
         return result(begun.id, state, summary, progress, 'no_change')
       }
-      if (preview.kind === 'uncertain') {
+      if (!armed && preview.kind === 'uncertain') {
         move('uncertain')
         note(preview.summary)
         return result(begun.id, state, summary, progress, 'uncertain_after_timeout')
       }
-      if (preview.kind === 'denied' || preview.kind === 'failed') {
+      if (!armed && (preview.kind === 'denied' || preview.kind === 'failed')) {
         move('fail')
         note(preview.summary)
         return result(begun.id, state, summary, progress, 'failed')
@@ -227,7 +306,7 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         choice.responseId && choice.callId
           ? { responseId: choice.responseId, callId: choice.callId }
           : undefined
-      if (!move('begin_execution')) {
+      if (!armed && !move('begin_execution')) {
         return result(begun.id, state, summary, progress, 'failed')
       }
       note('Running one allowed action.')

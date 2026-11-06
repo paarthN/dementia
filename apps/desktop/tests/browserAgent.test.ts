@@ -120,8 +120,8 @@ describe('agent browser policy', () => {
       screenPermission: false
     })
     expect(click).toMatchObject({
-      effect: 'confirm',
-      reason: 'I am about to press Submit. This can send or change something. Press it?'
+      effect: 'deny',
+      risk: 'R4'
     })
     expect(
       decidePolicy(registry, {

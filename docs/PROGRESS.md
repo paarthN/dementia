@@ -4,7 +4,7 @@ Living status for Companion. Update this file at the end of each phase with comm
 
 **Spec version:** 1.1 — 2026-11-04, macOS-first  
 **Last updated:** 2026-11-05  
-**Product status:** Phases 0–7 are in the repo. Chat can use demo mode on this Mac, or a cloud assistant through a server you run. Phase 8 was not started. A separate computer-use track can ask a cloud model for one tool at a time and can open its own Chromium window. Chat does not start that loop yet. See [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
+**Product status:** Phases 0–7 are in the repo. Chat can use demo mode on this Mac, or a cloud assistant through a server you run. Phase 8 was not started. A separate computer-use track can ask a cloud model for one tool at a time and can open its own Chromium window. Chat does not start that loop yet. Confirmations for that track are checked again when they are accepted. See [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
 
 ## Where to read next
 
@@ -66,6 +66,10 @@ Re-verified on 2026-11-04 before Phase 0 was treated as ready.
 | macOS helper verified | Yes. `system.ping` and real Accessibility reads succeeded. See the Phase 5 log for what was not captured. |
 
 ## Log
+
+### 2026-11-05 — Computer-use Phase 6
+
+A confirmation is good for one action, and the control is read again before it runs. If Save has changed to Delete, nothing is pressed. Send, Buy, Delete, Upload, and Submit are refused as generic clicks. Continue and OK are not treated as safe. Pause holds the next action. Stop sharing stops the computer-use session. On this Mac, Stop aborted an Accessibility read that was already in flight. Chat does not start this loop. The checks are in [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
 
 ### 2026-11-05 — Computer-use Phase 5
 

@@ -2,9 +2,9 @@
 
 Audit and implementation log for [AGENT_EXPANSION_SPEC.md](AGENT_EXPANSION_SPEC.md).
 
-**Phase:** 5 — managed browser.  
+**Phase:** 6 — approvals, Stop, and recovery.  
 **Date:** 2026-11-05  
-**Next step:** Wait for approval. Then Phase 6 only.
+**Next step:** Wait for approval. Then Phase 7 only.
 
 ## Baseline
 
@@ -237,4 +237,30 @@ Addresses must be `http` or `https`. Loopback, private, and link-local addresses
 **Not verified:** The chat box does not start this loop. A live model was not asked to use these tools. The Chromium binary is not packaged in the app. I did not look at the headed window.  
 **Blockers:** None for a review of Phase 5. A machine needs `npx playwright install chromium` before Agent Browser can open.  
 **Next phase:** Phase 6 after approval. Do not start it in this session. Approval still uses the name sent with the action. The adapter then refuses a password field it can see. A later pass should recheck the live control when the approval is accepted.
+
+## Phase 6
+
+Send, Buy, Delete, Upload, Pay, and Submit are refused as generic clicks, even when a confirmation is attached. Continue, OK, and Allow are not treated as safe. They ask for a confirmation of that exact control. If the surrounding words describe a purchase, a deletion, or a permission prompt, the click is refused. A page that says the action is already approved does not change that. The risk level is chosen in code. A risk level sent with the request is ignored.
+
+A confirmation is tied to one task, one step, the tool, the arguments, and the control that was showing. It expires after 10 minutes and can be used once. On accept, the live control is read again. If Save is now Delete, nothing is pressed. Typing uses the same recheck. Highlighted Press goes through `AuthorizedToolExecutor` instead of calling the helper on its own. A highlighted Delete is refused.
+
+Pause holds the next action. Resume lets that action run. Stop during a pause does not start it. A tool call that arrives after Stop is ignored. Stop sharing aborts the computer-use session as well as the chat task. A timed-out action is still not retried. Activity rows redact passwords and omit picture bytes.
+
+### Checks
+
+| Command | Result |
+|---|---|
+| `npm run typecheck` | Passed. |
+| `npm run lint` | Passed. |
+| `npm test` | Passed. 153 tests, 8 skipped. The new skip is `tests/stopRaceSmoke.test.ts` unless `COMPANION_STOP_RACE=1`. The other skips are unchanged. |
+| `npm run build` | Passed. Production bundle only. |
+| `COMPANION_STOP_RACE=1 npx vitest run tests/stopRaceSmoke.test.ts` from `apps/desktop` | Passed. 1 test. Stop aborted an in-flight Accessibility read. The helper then answered `system.ping`. No click was sent. |
+
+### Phase 6 report
+
+**Implemented:** Bound one-time approvals, a fresh control check before a press or text entry, refusal of generic send/buy/delete/upload clicks, pause and resume, and Stop sharing for the computer-use session.  
+**Verified:** The commands above. Unit tests covered a changed Save control, a replayed confirmation, a highlighted Delete, Continue and OK, a permission prompt, a forged page instruction, pause then resume, Stop during pause, and redacted activity rows. On this Mac, Stop aborted a live helper read.  
+**Not verified:** The chat box still does not start this loop, so Pause, Resume, and the approval card were not clicked in the window. Stop was not raced against a live click. A picture was not sent to a model.  
+**Blockers:** None for a review of Phase 6.  
+**Next phase:** Phase 7 after approval. Do not start it in this session.
 

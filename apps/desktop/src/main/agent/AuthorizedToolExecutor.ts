@@ -1,6 +1,11 @@
 import { toolResultSchema, type RiskLevel, type ToolResult } from '../../shared/agent'
 import { decidePolicy, type PolicyApproval } from '../services/policyEngine'
 import type { ToolContext, ToolRegistry } from '../services/toolRegistry'
+import {
+  sameTargetIdentity,
+  targetIdentityFrom,
+  type TargetIdentity
+} from './security/ActionApproval'
 
 export interface BoundApproval extends PolicyApproval {
   taskId: string
@@ -19,6 +24,7 @@ export interface AuthorizedCall {
   deadlineAtMs: number
   taskOwned: boolean
   context: ToolContext
+  liveTarget?: TargetIdentity | null
   onStart?: (tool: string) => void
 }
 
@@ -107,6 +113,23 @@ export class AuthorizedToolExecutor {
     if (decision.effect === 'confirm') {
       return { kind: 'confirm', risk: decision.risk, summary: decision.reason }
     }
+    if (call.approval && uiMutation(call.tool)) {
+      if (!call.liveTarget) {
+        return {
+          kind: 'denied',
+          risk: 'R4',
+          summary: 'I could not recheck the control, so I did not press it.'
+        }
+      }
+      const approved = approvedTarget(call.approval.payloadJson)
+      if (!approved || !sameTargetIdentity(approved, call.liveTarget)) {
+        return {
+          kind: 'denied',
+          risk: 'R4',
+          summary: 'The control changed, so I did not press it.'
+        }
+      }
+    }
     return { kind: 'ready', risk: decision.risk }
   }
 
@@ -180,6 +203,30 @@ function isUnresolvedNativeStop(error: unknown): boolean {
     code === 'timeout' ||
     code === 'uncertain'
   )
+}
+
+const uiMutationTools = new Set([
+  'ui.press',
+  'desktop.clickElement',
+  'desktop.setText',
+  'browser.click',
+  'browser.fill'
+])
+
+function uiMutation(tool: string): boolean {
+  return uiMutationTools.has(tool)
+}
+
+function approvedTarget(payloadJson: string): ReturnType<typeof targetIdentityFrom> | null {
+  try {
+    const parsed = JSON.parse(payloadJson) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null
+    }
+    return targetIdentityFrom(parsed as Record<string, unknown>)
+  } catch {
+    return null
+  }
 }
 
 function isPlainRecord(value: Record<string, unknown>): boolean {

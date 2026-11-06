@@ -16,6 +16,11 @@ import { listFavorites, recordActivity } from '../storage/database'
 import type { CommandRunner } from './launcher'
 import type { PolicyApproval } from './policyEngine'
 import { AuthorizedToolExecutor } from '../agent/AuthorizedToolExecutor'
+import {
+  sameTargetIdentity,
+  targetIdentityFrom,
+  type TargetIdentity
+} from '../agent/security/ActionApproval'
 import type { BrowserAutomationPort } from '../agent/ports/BrowserAutomationPort'
 import type { DesktopAutomationPort } from '../agent/ports/DesktopAutomationPort'
 import type { ReminderPort } from './reminderScheduler'
@@ -55,6 +60,8 @@ interface PlannedCall {
 interface StoredApproval extends PolicyApproval {
   approvalId: string
   taskId: string
+  stepId: string
+  observationId: string
   input: Record<string, unknown>
   confirmLabel: string
   summary: string
@@ -81,6 +88,7 @@ export class TaskOrchestrator {
   private readonly executor: AuthorizedToolExecutor
   private readonly tasks = new Map<string, AssistantTask>()
   private readonly approvals = new Map<string, StoredApproval>()
+  private readonly consumed = new Set<string>()
   private readonly cancelled = new Set<string>()
   private readonly controllers = new Map<string, AbortController>()
   private activeTaskId: string | null = null
@@ -176,16 +184,41 @@ export class TaskOrchestrator {
     ) {
       return this.outcome(task ?? null, 'failure', "That confirmation doesn't match the action.")
     }
+    if (this.consumed.has(approvalId)) {
+      return this.outcome(task, 'failure', "That confirmation doesn't match the action.")
+    }
     if (new Date(stored.expiresAtUtc).getTime() <= this.now().getTime()) {
       this.approvals.delete(taskId)
+      this.consumed.add(approvalId)
       return this.finish(
         task,
         'failure',
         'That confirmation expired. Ask me again if you still want it.'
       )
     }
+    this.consumed.add(approvalId)
     this.approvals.delete(taskId)
     return this.runCalls(task, [{ tool: stored.tool, input: stored.input }], stored)
+  }
+
+  async pressHighlighted(name: string, role?: string): Promise<TaskOutcome> {
+    const trimmed = name.trim()
+    if (!trimmed) {
+      return this.outcome(null, 'failure', 'Nothing to press.')
+    }
+    const input: Record<string, unknown> = { name: trimmed }
+    if (role?.trim()) {
+      input.role = role.trim()
+    }
+    const task = this.createTask(`Press ${trimmed}`, 'execute')
+    const call: PlannedCall = { tool: 'ui.press', input }
+    const blocked = await this.preparePress(call)
+    if (blocked) {
+      return this.finish(task, 'failure', blocked.summary)
+    }
+    const stored = this.makeApproval(task, call, `Press ${trimmed}`)
+    this.consumed.add(stored.approvalId)
+    return this.runCalls(task, [call], stored)
   }
 
   cancel(taskId: string): TaskOutcome {
@@ -260,7 +293,29 @@ export class TaskOrchestrator {
 
       const blocked = await this.preparePress(call)
       if (blocked) {
+        if (approval && pressTool(call.tool)) {
+          const keep = /password|secure screen/i.test(blocked.summary)
+          return this.finish(
+            task,
+            'failure',
+            keep ? blocked.summary : 'The control changed, so I did not press it.'
+          )
+        }
         return this.finish(task, blocked.responseState, blocked.summary)
+      }
+      let liveTarget: TargetIdentity | undefined
+      if (approval && pressTool(call.tool)) {
+        if (call.tool !== 'ui.press') {
+          return this.finish(
+            task,
+            'failure',
+            'I could not recheck the control, so I did not press it.'
+          )
+        }
+        liveTarget = targetIdentityFrom(call.input)
+        if (!sameTargetIdentity(targetIdentityFrom(approval.input), liveTarget)) {
+          return this.finish(task, 'failure', 'The control changed, so I did not press it.')
+        }
       }
 
       const report = await this.executor.execute({
@@ -276,7 +331,8 @@ export class TaskOrchestrator {
         deadlineAtMs: this.now().getTime() + 24 * 60 * 60 * 1000,
         taskOwned: true,
         context: this.context(task.id),
-        onStart: (name) => this.options.onTool?.(name)
+        onStart: (name) => this.options.onTool?.(name),
+        ...(liveTarget ? { liveTarget } : {})
       })
       const step: PlannedStep = {
         id: randomUUID(),
@@ -380,11 +436,13 @@ export class TaskOrchestrator {
     }
   }
 
-  private askConfirmation(task: AssistantTask, call: PlannedCall, reason: string): TaskOutcome {
+  private makeApproval(task: AssistantTask, call: PlannedCall, reason: string): StoredApproval {
     const expires = new Date(this.now().getTime() + approvalTtlMs)
-    const stored: StoredApproval = {
+    return {
       approvalId: randomUUID(),
       taskId: task.id,
+      stepId: task.steps.at(-1)?.id ?? randomUUID(),
+      observationId: typeof call.input.snapshotId === 'string' ? call.input.snapshotId : '',
       tool: call.tool,
       input: call.input,
       payloadJson: canonicalJson(call.input),
@@ -392,6 +450,10 @@ export class TaskOrchestrator {
       confirmLabel: confirmLabel(call.tool),
       summary: reason
     }
+  }
+
+  private askConfirmation(task: AssistantTask, call: PlannedCall, reason: string): TaskOutcome {
+    const stored = this.makeApproval(task, call, reason)
     this.approvals.set(task.id, stored)
     task.state = 'awaiting_confirmation'
     task.safeSummary = reason
@@ -615,6 +677,16 @@ function taskMode(routed: RoutedRequest): AssistantTask['mode'] {
     return 'explain'
   }
   return 'execute'
+}
+
+function pressTool(tool: string): boolean {
+  return (
+    tool === 'ui.press' ||
+    tool === 'desktop.clickElement' ||
+    tool === 'desktop.setText' ||
+    tool === 'browser.click' ||
+    tool === 'browser.fill'
+  )
 }
 
 function confirmLabel(tool: string): string {

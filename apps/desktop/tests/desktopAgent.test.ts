@@ -402,6 +402,13 @@ describe('desktop tool authorization', () => {
           tool: 'desktop.setText',
           payloadJson: canonicalJson(textInput),
           expiresAtUtc: '2026-11-05T20:10:00.000Z'
+        },
+        liveTarget: {
+          name: 'Note',
+          role: 'AXTextArea',
+          appName: '',
+          windowId: '42',
+          observationId: 'snap'
         }
       })
     )
@@ -426,6 +433,7 @@ function desktopCall(overrides: Partial<AuthorizedCall> & { tool: string }): Aut
     now: new Date('2026-11-05T20:00:00.000Z'),
     screenPermission: rest.screenPermission ?? true,
     approval: rest.approval ?? null,
+    ...(rest.liveTarget ? { liveTarget: rest.liveTarget } : {}),
     signal,
     timeoutMs: rest.timeoutMs ?? 1000,
     deadlineAtMs: Date.parse('2026-11-05T21:00:00.000Z'),

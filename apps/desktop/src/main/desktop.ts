@@ -576,15 +576,12 @@ export class Desktop {
       this.flash('Nothing to press.')
       return this.snapshot()
     }
-    const result = await this.screenHelp.press({
-      name: guide.targetName,
-      ...(guide.targetRole ? { role: guide.targetRole } : {})
-    })
+    const outcome = await this.orchestrator.pressHighlighted(guide.targetName, guide.targetRole)
+    this.remember(outcome)
     this.flash(
-      result.status === 'succeeded'
-        ? `Pressed ${guide.targetName}.`
-        : `Couldn't press ${guide.targetName}.`
+      outcome.responseState === 'success' ? `Pressed ${guide.targetName}.` : outcome.summary
     )
+    this.publish()
     return this.snapshot()
   }
 
@@ -620,6 +617,10 @@ export class Desktop {
 
   stopSharing(): SessionSnapshot {
     this.screenShareStopped = true
+    const agentId = this.agentSession.activeId()
+    if (agentId) {
+      this.agentSession.stop(agentId)
+    }
     this.screenHelp.revoke()
     this.pendingScreenText = null
     const running =

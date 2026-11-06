@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { redactSecretText } from '../agent/AgentPrompt'
 import { DatabaseSync } from 'node:sqlite'
 import {
   domainsDiffer,
@@ -92,9 +93,16 @@ export function recordActivity(
     entry.taskId,
     entry.operation,
     entry.result,
-    entry.safeSummary.slice(0, 400),
+    redactActivitySummary(entry.safeSummary),
     new Date().toISOString()
   )
+}
+
+function redactActivitySummary(value: string): string {
+  const withoutImages = value
+    .replace(/data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+/gi, '[image omitted]')
+    .replace(/\b[A-Za-z0-9+/]{80,}={0,2}\b/g, '[image omitted]')
+  return redactSecretText(withoutImages).replace(/\s+/g, ' ').trim().slice(0, 400)
 }
 
 export function loadPreferences(db: DatabaseSync): UserPreferences {
