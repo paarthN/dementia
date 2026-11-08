@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { diagnosticConsentDetail, diagnosticConsentLabel } from '../../shared/onboarding'
 import { mascotColorIds, textScales, themeModes } from '../../shared/preferences'
 import type { SessionSnapshot } from '../../shared/session'
 import type { SystemSettingsSection } from '../../shared/systemSettings'
@@ -159,6 +160,15 @@ export function SettingsPanel({
       <h2>Cloud assistant</h2>
       <CloudAssistant session={session} onNotice={onNotice} />
       <h2>Privacy</h2>
+      <label className="choice-row">
+        <input
+          type="checkbox"
+          checked={session.preferences.privacy.allowDiagnosticTelemetry}
+          onChange={(event) => void window.companion.setDiagnosticTelemetry(event.target.checked)}
+        />
+        {diagnosticConsentLabel}
+      </label>
+      <p className="muted">{diagnosticConsentDetail}</p>
       <label className="choice-row">
         <input
           type="checkbox"

@@ -2,9 +2,9 @@
 
 Audit and implementation log for [AGENT_EXPANSION_SPEC.md](AGENT_EXPANSION_SPEC.md).
 
-**Phase:** 6 — approvals, Stop, and recovery.  
+**Phase:** 8 — local packaging and release gate. Not a public release.  
 **Date:** 2026-11-05  
-**Next step:** Wait for approval. Then Phase 7 only.
+**Next step:** Stop after the first product Phase 9 slice. Notarization is still blocked. Do not start OAuth or another phase until that work is approved.
 
 ## Baseline
 
@@ -263,4 +263,128 @@ Pause holds the next action. Resume lets that action run. Stop during a pause do
 **Not verified:** The chat box still does not start this loop, so Pause, Resume, and the approval card were not clicked in the window. Stop was not raced against a live click. A picture was not sent to a model.  
 **Blockers:** None for a review of Phase 6.  
 **Next phase:** Phase 7 after approval. Do not start it in this session.
+
+## Phase 7
+
+Chat keeps Send on the existing path. **Do this for me** starts the computer-use loop, and only when cloud assistant consent is already on. Otherwise the strip says to allow that in Settings, or to do it yourself. The strip shows one goal, the current step in plain language, the last verified step, Pause or Resume, and Stop. A confirmation card names the control, for example Press Save, and Cancel. Speech and Send do not confirm it. If screen access is missing, one sentence offers Allow screen access and Do it myself. Stop is also in the menu bar menu, and it stays available while a highlight overlay is up. A picture is not included in the status event.
+
+### Checks
+
+| Command | Result |
+|---|---|
+| `npm run typecheck` | Passed, as part of `npm run build`. |
+| `npm run lint` | Passed. |
+| `npm test` | Passed. 166 tests, 8 skipped. The skips are unchanged. |
+| `npm run build` | Passed. Production bundle only. |
+
+### Phase 7 report
+
+**Implemented:** A progress strip in Chat, typed agent IPC for start, pause, resume, stop, confirm, and guide, and a menu-bar Stop. Confirmations still go through the existing one-time recheck.  
+**Verified:** The commands above. Component markup covers the goal, Pause, Stop, one approval button, the screen-access sentence, and a completed step only after verification. Schema tests reject a picture and an extra command field. A scripted run shows "Opening TextEdit." and does not press Save until the card is confirmed. A static high-contrast render of that strip was opened in a browser. Its accessibility tree listed Pause, then Stop, then Press Save, and Pause took keyboard focus. Tab in that browser did not move focus.  
+**Not verified:** Voice was not spoken into the live microphone. No picture was sent to a model, and the computer-use loop did not click a control. Cloud assistant consent is off on this Mac, so Do this for me cannot start that loop yet.
+
+A later live walk, on 2026-11-05, opened the app. The first launch was blank because the sandboxed preload tried to load Zod. The preload now checks a status push without loading Zod. After that, Home, Settings, Help, and Chat rendered. Do this for me showed the goal and “Cloud assistant is off until you allow it in Settings,” and Stop replaced that with “I stopped.” Send of Open TextEdit launched TextEdit, and the reply was “TextEdit is open.”  
+**Blockers:** None for a review of Phase 7.  
+**Next phase:** Phase 8 after approval. Do not start it in this session.
+
+## Phase 8
+
+This phase packages the app that already exists. It does not add a new kind of task. `npm run package:mac` builds the helper, copies that binary and Playwright's Chromium into the app, builds the Electron bundle, and writes `apps/desktop/dist/mac-arm64/Companion.app`. The copy keeps Chromium's relative framework links. The running app looks for the helper and the browser under `Contents/Resources`. A packaged run does not use the repository build, Homebrew, or a browser download. `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD` is set when Agent Browser starts.
+
+The first panel open asks for a missing microphone, screen, or helper Accessibility grant at most once in that launch. A denial is not asked again until the next launch. The helper's Screen Recording prompt waits until you turn screen access on, and it is also asked once per launch. Electron's permission and the helper's permission are reported separately.
+
+The signature on this app is ad-hoc. `codesign --verify --strict` passed for the helper and the app. `spctl` rejected the app. Notarization was not attempted. There is no Developer ID certificate. The packaged Info.plist allows arbitrary network loads because the Electron template wrote that. That was not changed. The app is not ready for someone else to install.
+
+### Checks
+
+| Command | Result |
+|---|---|
+| `npm run typecheck` | Passed, including inside `npm run build`. |
+| `npm run lint` | Passed. |
+| `npm test` | Passed. 175 tests, 9 skipped. The new skip is `tests/releaseBenchmark.test.ts` unless `COMPANION_RELEASE_BENCHMARK=1`. The other skips are unchanged. |
+| `npm run build` | Passed. |
+| `npm run build:helper` | Passed. Release binary linked and ad-hoc signed. |
+| `npm run package:mac` | Passed as a local build. The app is at `apps/desktop/dist/mac-arm64/Companion.app`. |
+| Relocated helper | Passed. A temporary copy of the app answered `system.ping`. That copy was then deleted. |
+| `COMPANION_RELEASE_BENCHMARK=1 npx vitest run tests/releaseBenchmark.test.ts` from `apps/desktop` | Passed. 1 test. See the rows below. |
+| Packaged app process | Started, stayed up for about 4 seconds, and was then stopped. The window was not looked at. The log had two Chromium task-policy messages and no crash. |
+
+### Benchmark, 2026-11-05
+
+No model was called. Confirmations are zero because this run called the tools directly, not the approval card. Cost is zero.
+
+| Task | Mark | Steps | Time |
+|---|---|---|---|
+| Type into a temporary TextEdit note | success_verified | 4 | 1.2 s |
+| Focus Finder | success_verified | 2 | 0.4 s |
+| Open System Settings, Displays | success_verified | 2 | 1.5 s |
+| Open Agent Browser on a local page | success_verified | 2 | 1.9 s |
+
+The whole run took 4.9 seconds. The note was not saved. No Mac setting was changed. Agent Browser was closed. I did not watch the windows.
+
+### Release checklist
+
+| Check | Result |
+|---|---|
+| Repeatable helper build, app build, and local `.app` | PASS |
+| Helper and Chromium found after the app is copied | PASS |
+| No Homebrew or runtime browser download | PASS |
+| Permission prompts do not repeat in one launch | PASS in unit tests. The dialogs were not watched. |
+| TextEdit, Finder, System Settings, Agent Browser tools | PASS as tool results. Windows not watched. |
+| Ad-hoc signature verifies | PASS |
+| Developer ID signature | FAIL. No certificate. |
+| Notarization | FAIL. Not attempted. |
+| Gatekeeper `spctl` | FAIL. |
+| Install by copying into `/Applications` | UNTESTED |
+| Uninstall of the temporary copy | PASS. `~/Library/Application Support/Companion` was not deleted. |
+| Stop during a live helper read | Not re-run. It passed on 2026-11-05 in Phase 6. |
+| Revoke Accessibility or Screen Recording in the middle of a run | UNTESTED. `tccutil reset` was not used. |
+| Packaged app restart | UNTESTED. One start was stopped after 4 seconds. |
+| Paid model cost | UNTESTED. No call. The local benchmark cost is 0. |
+| Screenshots or secrets in SQLite | PASS by the existing activity tests, which still pass. No new screenshot was stored. |
+| Unrestricted shell, native, or page script from the renderer | PASS by the helper allowlist and the existing blocked-tool tests. |
+| Approval replay and a changed Save control | Not re-run live. The existing tests still pass. |
+| Copying a personal browser profile | PASS by the existing Agent Browser tests. The packaged browser is a separate Chromium. |
+| Arbitrary network loads in the packaged Info.plist | FAIL for a public release. Left as the Electron template wrote it. |
+| General availability | FAIL. Do not ship this build. |
+
+### Known limits
+
+- The app is ad-hoc signed. Another Mac will not open it as a normal download.
+- Mail, calendar, purchases, passwords, and one-time codes are not available.
+- Companion does not control Safari or the user's Chrome.
+- The approval card was not clicked in the packaged app.
+- Screen and Accessibility revocation during a task were not tried.
+- macOS 14 was not tried.
+
+### Phase 8 report
+
+**Implemented:** A local Mac package that contains the helper and Agent Browser, one-time permission prompts per launch, and a release checklist.  
+**Verified:** Typecheck, lint, tests, helper build, the `.app`, a relocated helper ping, ad-hoc `codesign --verify`, and the four tool tasks above.  
+**Not verified:** Notarization, Gatekeeper acceptance, copying into `/Applications`, a watched window, a paid model, and permission revocation during a run.  
+**Blockers:** No Developer ID certificate. The app is not a public release.  
+**Next phase:** Stop. The first product Phase 9 slice is in the repo. Do not notarize, and do not start OAuth, until that work is approved.
+
+## Product Phase 9, first slice
+
+This is not a public release. `electron-builder.yml` still has `identity: null` and `notarize: false`. There is no Developer ID certificate, so notarization was not attempted.
+
+Help and the first-run card list the real limits: typing works with the microphone off, mail and calendar are not connected, send/buy/delete/upload/passwords are refused, and this copy is not notarized. Panel controls used for navigation, forms, and actions are at least 44px. Focus remains a visible outline.
+
+A crash note is off until Settings is checked. The file is `diagnostics/crash-note.txt` under the app's user data, mode 0600. The writer drops passwords, `sk-` keys, email addresses, and `/Users/<name>`. Nothing is uploaded. An uncaught error in the main process asks the app to quit after that write, so the existing quit path can stop the helper and Agent Browser.
+
+Quit also stops the active computer-use task before those processes close. Waking the Mac, or unlocking it, runs the same reminder check as startup. A timer longer than 2,147,483,647 ms is split so it does not overflow.
+
+### Checks
+
+| Command | Result |
+|---|---|
+| `npm run typecheck` | Passed. |
+| `npm run lint` | Passed. |
+| `npm test` | Passed. 184 tests, 9 skipped. The skips are the existing opt-in Mac runs. |
+| `npm run build` | Passed. Production bundle only. No installer. |
+
+### Not verified in this slice
+
+A second monitor, a real sleep, installing into `/Applications`, uninstalling by hand, a usability session, and a live crash. The checks are unit tests and static markup. Gatekeeper still rejects the ad-hoc app.
 

@@ -179,6 +179,13 @@ private func dispatchOnMain(method: String, params: [String: Any], requestId: St
         return ok(["pong": true])
     case "system.promptAccessibility":
         return ok(["trusted": promptAccessibility()])
+    case "system.permissionStatus":
+        return ok([
+            "accessibilityTrusted": AXIsProcessTrusted(),
+            "screenCaptureAllowed": CGPreflightScreenCaptureAccess()
+        ])
+    case "system.promptScreenCapture":
+        return ok(["allowed": capturePrompt.allowed(true)])
     case "system.getForegroundWindow":
         return foregroundResponse()
     case "ui.inspectForeground":

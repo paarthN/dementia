@@ -1,6 +1,6 @@
 # Tasks
 
-Small milestones for Companion. Phase order and done-when checks stay in [IMPLEMENTATION.md](IMPLEMENTATION.md). Do not start a milestone until the one before it is accepted. Phases 0–7 are in the repo. See [PROGRESS.md](PROGRESS.md). Phase 8 is next.
+Small milestones for Companion. Phase order and done-when checks stay in [IMPLEMENTATION.md](IMPLEMENTATION.md). Do not start a milestone until the one before it is accepted. Phases 0–7 are in the repo. See [PROGRESS.md](PROGRESS.md). Product Phase 8, mail or calendar, is not started. Product Phase 9 has a first slice and is not a public release.
 
 ## Milestone 0 — Foundation
 

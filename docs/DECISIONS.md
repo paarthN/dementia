@@ -77,3 +77,19 @@ The agent browser uses Playwright 1.65.0 in `companion-desktop`. It launches Pla
 A generic click is not a way to send, buy, delete, upload, or pay. Those labels are refused, including after a confirmation, because Companion has no separate action for them. Continue, OK, and Allow are not treated as safe. They need a confirmation of that exact control, and a purchase, deletion, or permission prompt in the surrounding words is refused. Password and one-time-code fields stay refused. When a confirmation is accepted, the live control is read again. If Save has become Delete, nothing is pressed. The same approval cannot be used twice. Highlighted Press goes through that same executor. Stop sharing also stops the computer-use session. A model-supplied risk level is ignored. Recorded 2026-11-05.
 
 **If this is wrong:** a person cannot ask Companion to press Submit for them. They press Submit, Send, Buy, Delete, and Upload themselves.
+
+Send in Chat still runs the older assistant. **Do this for me** is the opt-in for the computer-use loop, and it runs only after cloud assistant consent. The progress strip shows the goal, the current step, and the last step that was actually verified. Pause, Resume, and Stop are on that strip, and Stop is also in the menu bar. A confirmation button names the control. Saying yes, or pressing Send, does not confirm it. If screen access is missing, the strip offers that permission once and a way to switch to a guide. Recorded 2026-11-05.
+
+**If this is wrong:** a person who expected Send itself to drive the computer would need to press Do this for me.
+
+## Local app package
+
+Computer-use Phase 8 asks for a notarized Mac release. The signing decision above still waits for Developer ID until the product packaging phase, and this project has no Developer ID certificate. The local package is an ad-hoc signed arm64 `.app` from `npm run package:mac`. Gatekeeper rejects it. The helper and Agent Browser Chromium are copied into the app at build time. The running app does not download either one, and it does not look in Homebrew. A packaged run uses only the helper inside the app, not the copy in the repository. Recorded 2026-11-05.
+
+**If this is wrong:** someone who copies the `.app` to another Mac will be stopped by Gatekeeper until the app is Developer ID signed and notarized. An ad-hoc build on this Mac is not that release.
+
+## Phase 9 before OAuth, without notarization
+
+Product Phase 8, one mail or calendar provider, is still not started. Phase 9 was started because it was requested. The stricter release rule stays in force: no Developer ID identity is invented, and `notarize` stays false. Crash notes default off, stay on this Mac, and are redacted. They are not sent to a server. A reminder beyond the JavaScript timer limit is armed in slices. Recorded 2026-11-06.
+
+**If this is wrong:** mail and calendar remain unavailable, and another Mac will still refuse the ad-hoc app.

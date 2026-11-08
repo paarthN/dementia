@@ -21,6 +21,16 @@ app.whenReady().then(() => {
   registerIpc(desktop)
   desktop.start()
 
+  let crashing = false
+  process.on('uncaughtException', (error) => {
+    if (crashing) {
+      process.exit(1)
+    }
+    crashing = true
+    desktop.recordCrash(error)
+    app.quit()
+  })
+
   let quitting = false
   app.on('will-quit', (event) => {
     if (quitting) {

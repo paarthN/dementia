@@ -14,6 +14,14 @@ import {
   type SafeToolResult
 } from '../../shared/computerAgent'
 import { prepareModelObservation, redactSecretText } from './AgentPrompt'
+import {
+  approvalWhat,
+  completedToolAction,
+  confirmLabelFor,
+  describeToolAction,
+  agentStatusSchema,
+  type AgentStatus
+} from '../../shared/agentStatus'
 import type { ToolContext } from '../services/toolRegistry'
 import {
   defaultAgentBudget,
@@ -65,9 +73,10 @@ export interface AgentRunOptions {
     approval: ReturnType<typeof createHeldApproval>,
     signal: AbortSignal
   ) => Promise<
-    | { approved: true; liveTarget: ReturnType<typeof createHeldApproval>['target'] }
+    | { approved: true; liveTarget: ReturnType<typeof createHeldApproval>['target'] | null }
     | { approved: false }
   >
+  onStatus?: (status: AgentStatus) => void
 }
 
 export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult> {
@@ -89,11 +98,42 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
   let verified = false
   let continuation: AgentTurn['continuation']
   let lastToolResult: SafeToolResult | undefined
-  const note = (text: string): void => {
+  let viewStep = 0
+  let viewVerified = false
+  let viewCompleted: string | null = null
+  let viewApproval: AgentStatus['approval'] = null
+  let viewPermission: string | null = null
+  let viewCurrent = 'Checking the current screen.'
+  const goalText =
+    redactSecretText(options.goal).replace(/\s+/g, ' ').trim().slice(0, 240) || 'this request'
+  const emit = (): void => {
+    if (!options.onStatus) {
+      return
+    }
+    const parsed = agentStatusSchema.safeParse({
+      taskId: begun.id,
+      goal: goalText,
+      state,
+      current:
+        redactSecretText(viewCurrent).replace(/\s+/g, ' ').trim().slice(0, 200) || 'Working.',
+      completed: viewVerified ? viewCompleted : null,
+      step: viewStep,
+      verified: viewVerified,
+      approval: viewApproval,
+      permissionReason: viewPermission,
+      observing: state === 'observing' && (options.screenShare?.() ?? false)
+    })
+    if (parsed.success) {
+      options.onStatus(parsed.data)
+    }
+  }
+  const note = (text: string, shown = text): void => {
     summary = text
     const entry = { state, summary: text }
     agentProgressSchema.parse(entry)
     progress.push(entry)
+    viewCurrent = shown
+    emit()
   }
   const move = (event: ComputerAgentEvent): boolean => {
     const next = transitionAgentState(state, event)
@@ -233,8 +273,15 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         if (!move('need_confirmation')) {
           return result(begun.id, state, summary, progress, 'failed')
         }
-        note(preview.summary)
+        viewApproval = {
+          approvalId: held.approvalId,
+          what: approvalWhat(choice.tool, choice.args).slice(0, 240),
+          confirmLabel: confirmLabelFor(choice.tool, choice.args)
+        }
+        viewPermission = null
+        note(preview.summary, 'Waiting for you.')
         const decision = await options.waitForApproval(held, begun.signal)
+        viewApproval = null
         if (begun.signal.aborted) {
           move('stop')
           note('I stopped. Nothing else will run for that request.')
@@ -278,7 +325,10 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       }
       if (!armed && preview.kind === 'permission') {
         move('need_permission')
-        note(preview.summary)
+        viewApproval = null
+        viewPermission =
+          'Companion needs screen access to look at the other app. You can allow it, or do this yourself.'
+        note(preview.summary, 'Waiting for you.')
         return result(begun.id, state, summary, progress, 'needs_permission')
       }
       if (!armed && preview.kind === 'cancelled') {
@@ -309,7 +359,10 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
       if (!armed && !move('begin_execution')) {
         return result(begun.id, state, summary, progress, 'failed')
       }
-      note('Running one allowed action.')
+      viewApproval = null
+      viewPermission = null
+      viewStep = Math.min(20, actions + 1)
+      note('Running one allowed action.', describeToolAction(choice.tool, choice.args))
       const report = await options.executor.execute(call)
       actions += 1
       if (report.kind === 'uncertain') {
@@ -348,14 +401,17 @@ export async function runAgent(options: AgentRunOptions): Promise<AgentRunResult
         if (!move('step_failed')) {
           return result(begun.id, state, summary, progress, 'failed')
         }
-        note(report.result.summary)
+        note(report.result.summary, 'I could not confirm that step.')
         continue
       }
       verified = true
+      viewVerified = true
+      viewCompleted = completedToolAction(choice.tool, choice.args)
+      viewApproval = null
       if (!move('verified_continue')) {
         return result(begun.id, state, summary, progress, 'failed')
       }
-      note(report.result.summary)
+      note(report.result.summary, 'Checking the screen again.')
     }
 
     return result(begun.id, state, summary, progress, 'failed')

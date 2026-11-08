@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { chmod, mkdir } from 'node:fs/promises'
 import type { BrowserContext, Locator, Page, Route } from 'playwright'
+import { isDevOnlyRuntimePath } from '../../packaging/bundledRuntime'
 import { redactSecretText } from '../AgentPrompt'
 import { desktopKeyChords } from './DesktopAutomationPort'
 import {
@@ -60,6 +62,18 @@ export interface PlaywrightAdapterOptions {
   lookup?: ClassifyOptions['lookup']
   fixtureOrigins?: readonly string[]
   snapshotTtlMs?: number
+  browserExecutable?: string | null
+}
+
+function browserProcessEnv(): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) {
+      env[key] = value
+    }
+  }
+  env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1'
+  return env
 }
 
 export function agentBrowserLaunchOptions(headed: boolean): {
@@ -315,6 +329,18 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
           executablePath
         }
       }
+      if (
+        options.browserExecutable === null ||
+        (options.browserExecutable !== undefined &&
+          (!existsSync(options.browserExecutable) ||
+            isDevOnlyRuntimePath(options.browserExecutable)))
+      ) {
+        return {
+          status: 'unsupported',
+          summary: "Agent Browser isn't included in this copy of Companion.",
+          errorCode: 'unavailable'
+        }
+      }
       await mkdir(options.profileDir, { recursive: true, mode: 0o700 })
       await chmod(options.profileDir, 0o700)
       let playwright: typeof import('playwright')
@@ -327,13 +353,21 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
           errorCode: 'unavailable'
         }
       }
-      executablePath = playwright.chromium.executablePath()
+      executablePath = options.browserExecutable ?? playwright.chromium.executablePath()
+      if (isDevOnlyRuntimePath(executablePath)) {
+        return {
+          status: 'failed',
+          summary: "I only open Companion's own Agent Browser.",
+          errorCode: 'external_browser'
+        }
+      }
       let launched: BrowserContext
       try {
-        launched = await playwright.chromium.launchPersistentContext(
-          options.profileDir,
-          agentBrowserLaunchOptions(headed)
-        )
+        launched = await playwright.chromium.launchPersistentContext(options.profileDir, {
+          ...agentBrowserLaunchOptions(headed),
+          executablePath,
+          env: browserProcessEnv()
+        })
       } catch {
         return {
           status: 'failed',

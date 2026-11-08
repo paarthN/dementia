@@ -39,7 +39,7 @@ describe.skipIf(!enabled)('visible Agent Browser', () => {
     await adapterHolder.close()
     await closeServer()
     if (profileDir) {
-      await rm(profileDir, { recursive: true, force: true })
+      await rm(profileDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 

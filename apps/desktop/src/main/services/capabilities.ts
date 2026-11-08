@@ -25,11 +25,19 @@ function accessibilityTrusted(): boolean {
   }
 }
 
-export function readCapabilities(swiftHelperRunning = false): CompanionCapabilities {
+export function readCapabilities(
+  swiftHelperRunning = false,
+  helper: {
+    helperAccessibilityTrusted?: boolean | null
+    helperScreenCaptureAllowed?: boolean | null
+  } = {}
+): CompanionCapabilities {
   return describeCapabilities({
     platform: process.platform,
     accessibilityTrusted: accessibilityTrusted(),
     screenRecordingStatus: screenRecordingStatus(),
-    swiftHelperRunning
+    swiftHelperRunning,
+    helperAccessibilityTrusted: helper.helperAccessibilityTrusted,
+    helperScreenCaptureAllowed: helper.helperScreenCaptureAllowed
   })
 }

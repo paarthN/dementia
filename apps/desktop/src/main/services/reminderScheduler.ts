@@ -58,8 +58,22 @@ export function createReminderScheduler(options: {
     if (delay <= 0) {
       return
     }
-    const handle = options.timer.set(delay, () => {
+    const maxTimerDelayMs = 2_147_483_647
+    const slice = Math.min(delay, maxTimerDelayMs)
+    const handle = options.timer.set(slice, () => {
       timers.delete(id)
+      if (slice < delay) {
+        const current = getReminder(options.db, id)
+        if (!current || current.status !== 'scheduled') {
+          return
+        }
+        if (new Date(current.triggerAtUtc).getTime() <= options.now().getTime()) {
+          fire(id)
+          return
+        }
+        arm(id)
+        return
+      }
       fire(id)
     })
     timers.set(id, handle)
@@ -215,6 +229,7 @@ export function createReminderScheduler(options: {
           continue
         }
         if (new Date(reminder.triggerAtUtc).getTime() <= options.now().getTime()) {
+          clearTimer(reminder.id)
           const notice = miss(reminder)
           if (notice) {
             notices.push(notice)

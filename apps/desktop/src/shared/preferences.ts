@@ -38,6 +38,11 @@ const preferencesSchema = z.object({
     launchAtLogin: z.boolean(),
     showNotifications: z.boolean()
   }),
+  onboarding: z
+    .object({
+      seenLimits: z.boolean()
+    })
+    .default({ seenLimits: false }),
   mascot: z.object({
     monitorId: z.string().nullable(),
     normalizedX: z.number().min(0).max(1),
@@ -82,6 +87,9 @@ export const defaultPreferences: UserPreferences = {
   startup: {
     launchAtLogin: false,
     showNotifications: true
+  },
+  onboarding: {
+    seenLimits: false
   },
   mascot: {
     monitorId: null,

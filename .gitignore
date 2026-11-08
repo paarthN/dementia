@@ -222,6 +222,7 @@ __marimo__/
 # Node and Electron
 node_modules/
 out/
+apps/desktop/staged/
 .build/
 *.tsbuildinfo
 .eslintcache

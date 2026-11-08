@@ -234,6 +234,20 @@ export function registerIpc(desktop: Desktop): void {
     return desktop.setDeveloperInspection(payload.enabled)
   })
 
+  ipcMain.handle(companionIpcChannels.setDiagnosticTelemetry, (event, ...args: unknown[]) => {
+    assertTrustedIpcSender(event)
+    const payload = parseArgs(companionIpcChannels.setDiagnosticTelemetry, args) as {
+      enabled: boolean
+    }
+    return desktop.setDiagnosticTelemetry(payload.enabled)
+  })
+
+  ipcMain.handle(companionIpcChannels.dismissOnboarding, (event, ...args: unknown[]) => {
+    assertTrustedIpcSender(event)
+    parseArgs(companionIpcChannels.dismissOnboarding, args)
+    return desktop.dismissOnboarding()
+  })
+
   ipcMain.handle(companionIpcChannels.setVoice, (event, ...args: unknown[]) => {
     assertTrustedIpcSender(event)
     const payload = parseArgs(companionIpcChannels.setVoice, args) as {
@@ -259,5 +273,50 @@ export function registerIpc(desktop: Desktop): void {
       action: 'did_it' | 'repeat' | 'cant_find' | 'manual' | 'stop' | 'press'
     }
     return desktop.guideAction(payload.action)
+  })
+
+  ipcMain.handle(companionIpcChannels.startAgent, (event, ...args: unknown[]) => {
+    assertTrustedIpcSender(event)
+    const payload = parseArgs(companionIpcChannels.startAgent, args) as { text: string }
+    return desktop.startAgent(payload.text)
+  })
+
+  ipcMain.handle(companionIpcChannels.getAgentStatus, (event, ...args: unknown[]) => {
+    assertTrustedIpcSender(event)
+    parseArgs(companionIpcChannels.getAgentStatus, args)
+    return desktop.currentAgentStatus()
+  })
+
+  ipcMain.handle(companionIpcChannels.pauseAgent, (event, ...args: unknown[]) => {
+    assertTrustedIpcSender(event)
+    const payload = parseArgs(companionIpcChannels.pauseAgent, args) as { taskId: string }
+    return desktop.pauseAgent(payload.taskId)
+  })
+
+  ipcMain.handle(companionIpcChannels.resumeAgent, (event, ...args: unknown[]) => {
+    assertTrustedIpcSender(event)
+    const payload = parseArgs(companionIpcChannels.resumeAgent, args) as { taskId: string }
+    return desktop.resumeAgent(payload.taskId)
+  })
+
+  ipcMain.handle(companionIpcChannels.stopAgent, (event, ...args: unknown[]) => {
+    assertTrustedIpcSender(event)
+    const payload = parseArgs(companionIpcChannels.stopAgent, args) as { taskId: string }
+    return desktop.stopAgent(payload.taskId)
+  })
+
+  ipcMain.handle(companionIpcChannels.confirmAgent, async (event, ...args: unknown[]) => {
+    assertTrustedIpcSender(event)
+    const payload = parseArgs(companionIpcChannels.confirmAgent, args) as {
+      taskId: string
+      approvalId: string
+    }
+    return desktop.confirmAgent(payload.taskId, payload.approvalId)
+  })
+
+  ipcMain.handle(companionIpcChannels.guideAgent, async (event, ...args: unknown[]) => {
+    assertTrustedIpcSender(event)
+    const payload = parseArgs(companionIpcChannels.guideAgent, args) as { taskId: string }
+    return desktop.guideAgent(payload.taskId)
   })
 }

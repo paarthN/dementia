@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { agentBusy, chatSubmitEffect, type AgentStatus } from '../../shared/agentStatus'
 import type { SessionSnapshot } from '../../shared/session'
+import { AgentProgress } from './AgentProgress'
 
 const suggestions = [
   'Open TextEdit',
@@ -69,6 +71,7 @@ export function ChatPanel({
   const [sending, setSending] = useState(false)
   const [listening, setListening] = useState(false)
   const [voiceNote, setVoiceNote] = useState<string | null>(null)
+  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null)
   const recognizer = useRef<BrowserSpeech | null>(null)
   const wantListen = useRef(false)
   const spoken = useRef('')
@@ -78,6 +81,20 @@ export function ChatPanel({
   const task = session.activeTask
 
   async function send(text = draft): Promise<void> {
+    const effect = chatSubmitEffect({
+      agentBusy: agentBusy(agentStatus),
+      approvalVisible: Boolean(agentStatus?.approval)
+    })
+    if (effect === 'hold-approval') {
+      setVoiceNote(
+        'Press the button on the card. I will not take a confirmation from speech or from Send.'
+      )
+      return
+    }
+    if (effect === 'hold-busy') {
+      setVoiceNote('A task is already running. Press Stop before starting another.')
+      return
+    }
     if (sendingRef.current) {
       return
     }
@@ -93,6 +110,24 @@ export function ChatPanel({
       setSending(false)
     }
   }
+
+  useEffect(() => {
+    let active = true
+    void window.companion.getAgentStatus().then((status) => {
+      if (active) {
+        setAgentStatus(status)
+      }
+    })
+    const stop = window.companion.onAgentStatus((status) => {
+      if (active) {
+        setAgentStatus(status)
+      }
+    })
+    return () => {
+      active = false
+      stop()
+    }
+  }, [])
 
   useEffect(() => {
     return () => {
@@ -226,6 +261,47 @@ export function ChatPanel({
 
   return (
     <div className="chat">
+      <AgentProgress
+        status={agentStatus}
+        onPause={() => {
+          if (agentStatus) {
+            void window.companion.pauseAgent(agentStatus.taskId).then(setAgentStatus)
+          }
+        }}
+        onResume={() => {
+          if (agentStatus) {
+            void window.companion.resumeAgent(agentStatus.taskId).then(setAgentStatus)
+          }
+        }}
+        onStop={() => {
+          if (agentStatus) {
+            void window.companion.stopAgent(agentStatus.taskId).then(setAgentStatus)
+          }
+        }}
+        onConfirm={() => {
+          if (agentStatus?.approval) {
+            void window.companion
+              .confirmAgent(agentStatus.taskId, agentStatus.approval.approvalId)
+              .then(setAgentStatus)
+          }
+        }}
+        onAllowScreen={() => {
+          if (!agentStatus) {
+            return
+          }
+          const goal = agentStatus.goal
+          void window.companion
+            .stopAgent(agentStatus.taskId)
+            .then(() => window.companion.setScreenAccess(true))
+            .then(() => window.companion.startAgent({ text: goal }))
+            .then(setAgentStatus)
+        }}
+        onGuide={() => {
+          if (agentStatus) {
+            void window.companion.guideAgent(agentStatus.taskId)
+          }
+        }}
+      />
       {session.screen.captureActive ? (
         <div className="guide-bar">
           <p>Your screen is being used for this request.</p>
@@ -402,9 +478,35 @@ export function ChatPanel({
             type="button"
             className="listen"
             aria-pressed={listening}
+            aria-label={listening ? 'Stop listening' : 'Listen'}
             onClick={() => void toggleListening()}
           >
             {listening ? 'Stop' : 'Listen'}
+          </button>
+          <button
+            type="button"
+            className="quiet"
+            disabled={sending || agentBusy(agentStatus) || Boolean(agentStatus?.approval)}
+            onClick={() => {
+              const text = draft.trim()
+              if (!text || sendingRef.current) {
+                return
+              }
+              sendingRef.current = true
+              setSending(true)
+              void window.companion
+                .startAgent({ text })
+                .then((status) => {
+                  setAgentStatus(status)
+                  onDraftChange('')
+                })
+                .finally(() => {
+                  sendingRef.current = false
+                  setSending(false)
+                })
+            }}
+          >
+            Do this for me
           </button>
           <button type="submit" className="primary" disabled={sending}>
             {sending ? 'Sending' : 'Send'}

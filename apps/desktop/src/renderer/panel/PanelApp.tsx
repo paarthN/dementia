@@ -5,6 +5,8 @@ import { browserSpeechAvailable, micLabel, micStatus } from '../../shared/voice'
 import { ChatPanel } from './ChatPanel'
 import { HelpPanel } from './HelpPanel'
 import { HomePanel } from './HomePanel'
+import { OnboardingNotice } from './OnboardingNotice'
+import { sectionNav } from './sectionNav'
 import { SettingsPanel } from './SettingsPanel'
 
 const titles: Record<PanelView, string> = {
@@ -13,13 +15,6 @@ const titles: Record<PanelView, string> = {
   chat: 'Chat',
   help: 'Help'
 }
-
-const nav: Array<{ view: PanelView; label: string }> = [
-  { view: 'chat', label: 'Chat' },
-  { view: 'home', label: 'Home' },
-  { view: 'settings', label: 'Settings' },
-  { view: 'help', label: 'Help' }
-]
 
 export function PanelApp(): React.JSX.Element {
   const [session, setSession] = useState<SessionSnapshot | null>(null)
@@ -77,7 +72,7 @@ export function PanelApp(): React.JSX.Element {
       <aside className="sidebar">
         <p className="brand">Companion</p>
         <nav className="nav" aria-label="Sections">
-          {nav.map((item) => (
+          {sectionNav.map((item) => (
             <button
               key={item.view}
               type="button"
@@ -119,6 +114,9 @@ export function PanelApp(): React.JSX.Element {
         <header className="workspace-head">
           <h1>{titles[view]}</h1>
         </header>
+        {session.preferences.onboarding.seenLimits ? null : (
+          <OnboardingNotice onDismiss={() => void window.companion.dismissOnboarding()} />
+        )}
         {notice ? <p className="notice">{notice}</p> : null}
         {session.dueReminders.map((item) => (
           <section key={`${item.reminderId}-${item.kind}`} className="notice" aria-label="Reminder">

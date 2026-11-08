@@ -17,6 +17,7 @@
     "lint": "npm run lint -w companion-desktop",
     "format": "npm run format -w companion-desktop",
     "build:helper": "swift build -c release --arch arm64 --package-path native/CompanionMacHelper && codesign --force --sign - native/CompanionMacHelper/.build/release/CompanionMacHelper",
+    "package:mac": "npm run build:helper && node scripts/stage-mac-resources.mjs && npm run build -w companion-desktop && npm run build:mac:dir -w companion-desktop && node scripts/verify-mac-package.mjs",
     "assistant-proxy": "node backend/assistant-proxy/server.mjs"
   },
   "dependencies": {

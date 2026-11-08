@@ -12,8 +12,16 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!staged/**'
+extraResources:
+  - from: staged/helper
+    to: helper
+  - from: staged/agent-browser
+    to: agent-browser
 asarUnpack:
   - resources/**
+  - node_modules/playwright/**/*
+  - node_modules/playwright-core/**/*
 win:
   executableName: Companion
 nsis:
@@ -22,6 +30,9 @@ nsis:
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
 mac:
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
   entitlementsInherit: entitlements/entitlements.mac.plist
   notarize: false
   extendInfo:

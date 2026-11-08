@@ -6,6 +6,7 @@ import {
   Menu,
   nativeImage,
   Notification,
+  powerMonitor,
   screen,
   shell,
   Tray
@@ -61,6 +62,9 @@ import {
   type ReminderNotice
 } from './services/reminderScheduler'
 import { readCapabilities } from './services/capabilities'
+import { writeCrashNote } from './services/crashNote'
+import { resolveBundledBrowser } from './packaging/bundledRuntime'
+import { planHelperPrompts, readHelperPermissionStatus } from '../shared/permissionPrompt'
 import { promptSystemMedia } from './services/systemPermissions'
 import { createScreenCoordinator } from './services/screenCoordinator'
 import {
@@ -86,6 +90,9 @@ import { createObservationService, createObservingDesktopPort } from './agent/Ob
 import { createRemoteAssistant } from './providers/assistant'
 import { createToolRegistry } from './services/toolRegistry'
 import type { AgentRunResult } from '../shared/computerAgent'
+import { agentBusy, agentStatusSchema, type AgentStatus } from '../shared/agentStatus'
+import { AgentApprovalGate } from './agent/AgentApprovalGate'
+import { readLiveTarget } from './agent/AgentEvents'
 import { listReminders } from './storage/reminders'
 import { devToolsAllowed, secureWebPreferences } from './windows/secureWebPreferences'
 import { loadRenderer } from './windows/loadRenderer'
@@ -108,12 +115,17 @@ export class Desktop {
   private helperRunning = false
   private pendingScreenText: string | null = null
   private screenShareStopped = false
-  private accessibilityPrompted = false
+  private helperAccessibilityTrusted: boolean | null = null
+  private helperScreenCaptureAllowed: boolean | null = null
+  private helperPrompts = { accessibility: false, screenCapture: false }
   private readonly scheduler: ReturnType<typeof createReminderScheduler>
   private readonly bridge: OsBridge
   private readonly remote: ReturnType<typeof createRemoteAssistant>
   private readonly agentClient: ReturnType<typeof createAgentProviderClient>
   private readonly agentSession = new AgentSessionController()
+  private readonly agentGate = new AgentApprovalGate()
+  private agentStatus: AgentStatus | null = null
+  private agentGoal: string | null = null
   private readonly screenHelp: ReturnType<typeof createScreenCoordinator>
   private readonly orchestrator: TaskOrchestrator
   private desktopPort: DesktopAutomationPort | null = null
@@ -132,7 +144,10 @@ export class Desktop {
       },
       notify: (notice) => this.rememberReminder(notice)
     })
-    const helper = resolveHelperCommand()
+    const helper = resolveHelperCommand(process.env, process.cwd(), {
+      packaged: app.isPackaged,
+      resourcesPath: process.resourcesPath
+    })
     this.bridge = helper ? createMacOsBridge(helper) : createClosedOsBridge()
     const displays = (): DisplaySpace[] =>
       screen.getAllDisplays().map((display) => ({
@@ -159,7 +174,8 @@ export class Desktop {
     this.desktopPort = desktopPort
     this.browserPort = createPlaywrightAdapter({
       profileDir: join(app.getPath('userData'), 'agent-browser'),
-      headed: true
+      headed: true,
+      browserExecutable: app.isPackaged ? resolveBundledBrowser(process.resourcesPath) : undefined
     })
     this.screenHelp.setDeveloperInspection(
       loadPreferences(this.db).privacy.developerInspection === true
@@ -240,8 +256,142 @@ export class Desktop {
         browser: this.browserPort
       }),
       screenShare: () => this.screenShared(),
-      observe: (signal) => this.observeForAgent(signal)
+      observe: (signal) => this.observeForAgent(signal),
+      onStatus: (status) => this.setAgentStatus(status),
+      waitForApproval: (approval, signal) => this.agentGate.wait(approval, signal)
     })
+  }
+
+  currentAgentStatus(): AgentStatus | null {
+    return this.agentStatus
+  }
+
+  startAgent(text: string): AgentStatus | null {
+    const goal = text.trim()
+    if (!goal) {
+      this.flash('Type a request first.')
+      return this.agentStatus
+    }
+    if (this.agentStatus && agentBusy(this.agentStatus)) {
+      this.flash('A task is already running. Press Stop before starting another.')
+      return this.agentStatus
+    }
+    this.agentGoal = goal.slice(0, 240)
+    this.messages.push(this.message('user', goal, 'text'))
+    if (!cloudAgentConsent(loadPreferences(this.db).privacy)) {
+      const reason =
+        'Cloud assistant is off until you allow it in Settings. You can do this yourself instead.'
+      this.messages.push(this.message('assistant', reason, 'status'))
+      this.setAgentStatus({
+        taskId: 'needs-consent',
+        goal: this.agentGoal,
+        state: 'awaiting_permission',
+        current: 'Waiting for you.',
+        completed: null,
+        step: 0,
+        verified: false,
+        approval: null,
+        permissionReason: reason,
+        observing: false
+      })
+      this.publish()
+      return this.agentStatus
+    }
+    this.publish()
+    void this.runComputerAgent(this.agentGoal)
+      .then((result) => {
+        const kind = result.actionOutcome === 'success_verified' ? 'success' : 'status'
+        this.messages.push(this.message('assistant', result.summary, kind))
+        this.publish()
+      })
+      .catch(() => {
+        this.setAgentStatus({
+          taskId: this.agentSession.activeId() ?? 'agent-failed',
+          goal: this.agentGoal ?? 'this request',
+          state: 'failed',
+          current: "I couldn't finish that.",
+          completed: this.agentStatus?.verified ? this.agentStatus.completed : null,
+          step: this.agentStatus?.step ?? 0,
+          verified: this.agentStatus?.verified ?? false,
+          approval: null,
+          permissionReason: null,
+          observing: false
+        })
+        this.publish()
+      })
+    return this.agentStatus
+  }
+
+  pauseAgent(taskId: string): AgentStatus | null {
+    this.agentSession.pause(taskId)
+    if (this.agentStatus?.taskId === taskId) {
+      this.setAgentStatus({
+        ...this.agentStatus,
+        state: 'paused',
+        current: 'Paused. Nothing else will happen until you resume.'
+      })
+    }
+    return this.agentStatus
+  }
+
+  resumeAgent(taskId: string): AgentStatus | null {
+    this.agentSession.resume(taskId)
+    if (this.agentStatus?.taskId === taskId) {
+      this.setAgentStatus({
+        ...this.agentStatus,
+        state: 'observing',
+        current: 'Resuming.'
+      })
+    }
+    return this.agentStatus
+  }
+
+  stopAgent(taskId: string): AgentStatus | null {
+    this.agentGate.decline(taskId)
+    if (this.agentSession.activeId() === taskId) {
+      this.agentSession.stop(taskId)
+    }
+    if (this.agentStatus?.taskId === taskId) {
+      this.setAgentStatus({
+        ...this.agentStatus,
+        state: 'cancelled',
+        current: 'I stopped. Nothing else will run for that request.',
+        approval: null,
+        permissionReason: null,
+        observing: false
+      })
+    }
+    return this.agentStatus
+  }
+
+  async confirmAgent(taskId: string, approvalId: string): Promise<AgentStatus | null> {
+    const held = this.agentGate.current()
+    if (!held || held.taskId !== taskId || held.approvalId !== approvalId) {
+      return this.agentStatus
+    }
+    const liveTarget = await readLiveTarget(held, {
+      desktop: this.desktopPort,
+      browser: this.browserPort
+    })
+    this.agentGate.confirm(taskId, approvalId, liveTarget)
+    return this.agentStatus
+  }
+
+  async guideAgent(taskId: string): Promise<SessionSnapshot> {
+    const goal = this.agentGoal
+    this.agentGate.decline(taskId)
+    if (this.agentSession.activeId() === taskId) {
+      this.agentSession.stop(taskId)
+    }
+    this.agentGoal = null
+    this.setAgentStatus(null)
+    if (!goal) {
+      return this.snapshot()
+    }
+    const outcome = await this.orchestrator.submit(goal, { mode: 'guide' })
+    this.remember(outcome)
+    this.publish()
+    return this.snapshot()
   }
 
   private screenShared(): boolean {
@@ -268,8 +418,9 @@ export class Desktop {
   start(): void {
     void this.bridge
       .request('system.ping', {}, { timeoutMs: 3_000 })
-      .then(() => {
+      .then(async () => {
         this.helperRunning = true
+        await this.refreshHelperPermissions()
         this.publish()
       })
       .catch(() => {
@@ -283,6 +434,8 @@ export class Desktop {
     this.openPanel(missed.length > 0 ? 'home' : 'chat')
     screen.on('display-removed', () => this.placeMascot())
     screen.on('display-metrics-changed', () => this.placeMascot())
+    powerMonitor.on('resume', () => this.recoverReminders())
+    powerMonitor.on('unlock-screen', () => this.recoverReminders())
   }
 
   snapshot(): SessionSnapshot {
@@ -308,10 +461,26 @@ export class Desktop {
   }
 
   capabilities(): ReturnType<typeof readCapabilities> {
-    return readCapabilities(this.helperRunning)
+    return readCapabilities(this.helperRunning, {
+      helperAccessibilityTrusted: this.helperAccessibilityTrusted,
+      helperScreenCaptureAllowed: this.helperScreenCaptureAllowed
+    })
   }
 
   async stop(): Promise<void> {
+    const agentId = this.agentSession.activeId()
+    if (agentId) {
+      this.stopAgent(agentId)
+    }
+    const task = this.activeTask
+    if (
+      task &&
+      task.state !== 'completed' &&
+      task.state !== 'failed' &&
+      task.state !== 'cancelled'
+    ) {
+      this.remember(this.orchestrator.cancel(task.id))
+    }
     if (this.guideTimer) {
       clearInterval(this.guideTimer)
       this.guideTimer = null
@@ -462,6 +631,10 @@ export class Desktop {
   }
 
   async launchFavorite(id: string): Promise<ActionResult> {
+    const blocked = this.agentWorkBlocked()
+    if (blocked) {
+      return blocked
+    }
     const favorite = listFavorites(this.db).find((item) => item.id === id)
     if (!favorite) {
       return { status: 'failed', summary: "I couldn't find that favorite." }
@@ -478,6 +651,10 @@ export class Desktop {
   }
 
   async launchKnownBundle(bundleId: string): Promise<ActionResult> {
+    const blocked = this.agentWorkBlocked()
+    if (blocked) {
+      return blocked
+    }
     if (!isBundleId(bundleId)) {
       return { status: 'failed', summary: "I couldn't find that app on this computer." }
     }
@@ -492,6 +669,10 @@ export class Desktop {
     text: string,
     mode: 'execute' | 'guide' | 'explain' = 'execute'
   ): Promise<SessionSnapshot> {
+    if (this.agentStatus && agentBusy(this.agentStatus)) {
+      this.flash('A task is already running. Press Stop before starting another.')
+      return this.snapshot()
+    }
     this.dropPendingApproval()
     const trimmed = text.trim()
     if (trimmed) {
@@ -598,13 +779,51 @@ export class Desktop {
     this.publish()
   }
 
+  private async refreshHelperPermissions(): Promise<void> {
+    try {
+      const raw = await this.bridge.request('system.permissionStatus', {}, { timeoutMs: 3_000 })
+      const parsed = readHelperPermissionStatus(raw)
+      if (!parsed) {
+        return
+      }
+      this.helperAccessibilityTrusted = parsed.accessibilityTrusted
+      this.helperScreenCaptureAllowed = parsed.screenCaptureAllowed
+    } catch {
+      this.helperAccessibilityTrusted = null
+      this.helperScreenCaptureAllowed = null
+    }
+  }
+
+  private async promptMissingHelperPermissions(userRequestedScreen: boolean): Promise<void> {
+    const plan = planHelperPrompts({
+      accessibilityTrusted: this.helperAccessibilityTrusted,
+      screenCaptureAllowed: this.helperScreenCaptureAllowed,
+      askedAccessibility: this.helperPrompts.accessibility,
+      askedScreenCapture: this.helperPrompts.screenCapture,
+      userRequestedScreen
+    })
+    if (plan.promptAccessibility) {
+      this.helperPrompts.accessibility = true
+      await this.screenHelp.promptAccessibility()
+    }
+    if (plan.promptScreenCapture) {
+      this.helperPrompts.screenCapture = true
+      try {
+        await this.bridge.request('system.promptScreenCapture', {}, { timeoutMs: 3_000 })
+      } catch {
+        // macOS shows the dialog. A timeout still leaves the switch for the user.
+      }
+    }
+  }
+
   async setScreenAccess(enabled: boolean): Promise<SessionSnapshot> {
     if (!enabled) {
       return this.stopSharing()
     }
     this.screenShareStopped = false
     this.screenHelp.grant()
-    await this.screenHelp.promptAccessibility()
+    await this.refreshHelperPermissions()
+    await this.promptMissingHelperPermissions(true)
     const pending = this.pendingScreenText
     this.pendingScreenText = null
     if (pending) {
@@ -647,10 +866,9 @@ export class Desktop {
     if (result.screen === 'granted' && !this.screenShareStopped) {
       this.screenHelp.grant()
     }
-    if (!this.accessibilityPrompted) {
-      this.accessibilityPrompted = true
-      await this.screenHelp.promptAccessibility()
-    }
+    await this.refreshHelperPermissions()
+    await this.promptMissingHelperPermissions(options.resumeScreen === true)
+    await this.refreshHelperPermissions()
     if (
       options.openSettings &&
       process.platform === 'darwin' &&
@@ -675,6 +893,39 @@ export class Desktop {
     this.screenHelp.setDeveloperInspection(enabled)
     this.publish()
     return this.snapshot()
+  }
+
+  setDiagnosticTelemetry(enabled: boolean): SessionSnapshot {
+    const current = loadPreferences(this.db)
+    savePreferences(this.db, {
+      ...current,
+      privacy: { ...current.privacy, allowDiagnosticTelemetry: enabled }
+    })
+    this.publish()
+    return this.snapshot()
+  }
+
+  dismissOnboarding(): SessionSnapshot {
+    const current = loadPreferences(this.db)
+    savePreferences(this.db, {
+      ...current,
+      onboarding: { seenLimits: true }
+    })
+    this.publish()
+    return this.snapshot()
+  }
+
+  recordCrash(error: { name?: string; message?: string }): void {
+    try {
+      const consent = loadPreferences(this.db).privacy.allowDiagnosticTelemetry
+      writeCrashNote(join(app.getPath('userData'), 'diagnostics'), consent, {
+        name: error.name ?? 'Error',
+        message: error.message ?? '',
+        atUtc: new Date().toISOString()
+      })
+    } catch {
+      // A crash note must not throw a second time.
+    }
   }
 
   setVoice(enabled: boolean, readRepliesAloud: boolean): SessionSnapshot {
@@ -861,6 +1112,13 @@ export class Desktop {
     loadRenderer(this.panelWindow, 'panel.html')
   }
 
+  private recoverReminders(): void {
+    const notices = this.scheduler.start()
+    if (notices.length > 0) {
+      this.openPanel('home')
+    }
+  }
+
   private placeMascot(): void {
     const mascot = this.mascotWindow
     if (!mascot || mascot.isDestroyed()) {
@@ -978,6 +1236,33 @@ export class Desktop {
       kind,
       createdAtUtc: new Date().toISOString(),
       recovery
+    }
+  }
+
+  private agentWorkBlocked(): ActionResult | null {
+    if (!this.agentStatus || !agentBusy(this.agentStatus)) {
+      return null
+    }
+    const summary = 'A task is already running. Press Stop before starting another.'
+    this.flash(summary)
+    return { status: 'failed', summary }
+  }
+
+  private setAgentStatus(status: AgentStatus | null): void {
+    if (status === null) {
+      this.agentStatus = null
+    } else {
+      const parsed = agentStatusSchema.safeParse(status)
+      if (!parsed.success) {
+        return
+      }
+      this.agentStatus = parsed.data
+    }
+    this.renderTrayMenu()
+    for (const window of [this.mascotWindow, this.panelWindow, this.overlayWindow]) {
+      if (window && !window.isDestroyed()) {
+        window.webContents.send('companion:agent-status', this.agentStatus)
+      }
     }
   }
 
@@ -1104,6 +1389,14 @@ export class Desktop {
     icon.setTemplateImage(true)
     this.tray = new Tray(icon)
     this.tray.setToolTip('Companion')
+    this.renderTrayMenu()
+  }
+
+  private renderTrayMenu(): void {
+    if (!this.tray) {
+      return
+    }
+    const taskId = this.agentStatus && agentBusy(this.agentStatus) ? this.agentStatus.taskId : null
     this.tray.setContextMenu(
       Menu.buildFromTemplate([
         {
@@ -1111,6 +1404,15 @@ export class Desktop {
           click: () => {
             this.setMascotCollapsed(false)
             this.showMascot()
+          }
+        },
+        {
+          label: 'Stop',
+          enabled: taskId !== null,
+          click: () => {
+            if (taskId) {
+              this.stopAgent(taskId)
+            }
           }
         },
         {

@@ -238,7 +238,7 @@ describe('managed Chromium', () => {
   afterAll(async () => {
     await adapter.close()
     await closeServer()
-    await rm(profileDir, { recursive: true, force: true })
+    await rm(profileDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
   it('opens Companion Chromium, fills a search, and does not submit it', async () => {

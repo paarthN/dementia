@@ -1,13 +1,22 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+
+export {
+  bundledBrowserExecutable,
+  bundledHelperPath,
+  helperBinaryCandidates,
+  isDevOnlyRuntimePath,
+  resolveBundledBrowser,
+  resolveHelperCommand
+} from '../packaging/bundledRuntime'
 
 const requestLimit = 65_536
 const responseLimit = 1_000_000
 
-const helperMethods = new Set([
+export const helperMethodNames = [
   'system.ping',
   'system.promptAccessibility',
+  'system.permissionStatus',
+  'system.promptScreenCapture',
   'system.getForegroundWindow',
   'ui.inspectForeground',
   'ui.findElement',
@@ -23,7 +32,9 @@ const helperMethods = new Set([
   'desktop.scroll',
   'desktop.captureWindow',
   'desktop.cancel'
-])
+] as const
+
+const helperMethods = new Set<string>(helperMethodNames)
 
 const oneShotMethods = new Set([
   'ui.invokeElement',
@@ -311,24 +322,4 @@ export function createClosedOsBridge(
       return undefined
     }
   }
-}
-
-export function helperBinaryCandidates(start = process.cwd()): string[] {
-  return [
-    join(start, 'native/CompanionMacHelper/.build/release/CompanionMacHelper'),
-    join(start, '../../native/CompanionMacHelper/.build/release/CompanionMacHelper'),
-    join(start, '../../../../native/CompanionMacHelper/.build/release/CompanionMacHelper')
-  ]
-}
-
-export function resolveHelperCommand(
-  env: NodeJS.ProcessEnv = process.env,
-  start = process.cwd()
-): { command: string; args: string[] } | null {
-  const override = env['COMPANION_HELPER_PATH']
-  if (override && existsSync(override)) {
-    return { command: override, args: [] }
-  }
-  const found = helperBinaryCandidates(start).find((candidate) => existsSync(candidate))
-  return found ? { command: found, args: [] } : null
 }

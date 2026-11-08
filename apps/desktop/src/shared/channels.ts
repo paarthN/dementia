@@ -29,9 +29,18 @@ export const companionIpcChannels = {
   requestSystemPermissions: 'permissions:request',
   stopSharing: 'screen:stop-sharing',
   setDeveloperInspection: 'privacy:developer-inspection',
+  setDiagnosticTelemetry: 'privacy:diagnostics',
+  dismissOnboarding: 'onboarding:seen',
   setVoice: 'voice:set',
   setAssistantMode: 'assistant:mode',
-  guideAction: 'guide:action'
+  guideAction: 'guide:action',
+  startAgent: 'agent:start',
+  getAgentStatus: 'agent:status',
+  pauseAgent: 'agent:pause',
+  resumeAgent: 'agent:resume',
+  stopAgent: 'agent:stop',
+  confirmAgent: 'agent:confirm',
+  guideAgent: 'agent:guide'
 } as const
 
 export type CompanionIpcChannel = (typeof companionIpcChannels)[keyof typeof companionIpcChannels]

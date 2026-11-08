@@ -1,3 +1,4 @@
+import type { AgentStatus } from './agentStatus'
 import type { CompanionCapabilities } from './capabilities'
 import { companionIpcChannels } from './channels'
 import type { FavoriteSaveResult } from './favorites'
@@ -18,7 +19,10 @@ export interface AppearancePatch {
   extraLineSpacing?: boolean
 }
 
-export function createCompanionApi(invoke: Invoker): {
+export function createCompanionApi(
+  invoke: Invoker,
+  listen: (listener: (status: AgentStatus | null) => void) => () => void = () => () => undefined
+): {
   getCapabilities: () => Promise<CompanionCapabilities>
   getSession: () => Promise<SessionSnapshot>
   openPanel: (view?: PanelView) => Promise<void>
@@ -69,6 +73,8 @@ export function createCompanionApi(invoke: Invoker): {
   }) => Promise<SessionSnapshot>
   stopSharing: () => Promise<SessionSnapshot>
   setDeveloperInspection: (enabled: boolean) => Promise<SessionSnapshot>
+  setDiagnosticTelemetry: (enabled: boolean) => Promise<SessionSnapshot>
+  dismissOnboarding: () => Promise<SessionSnapshot>
   setVoice: (input: { enabled: boolean; readRepliesAloud: boolean }) => Promise<SessionSnapshot>
   setAssistantMode: (input: {
     mode: 'demo' | 'cloud'
@@ -78,6 +84,14 @@ export function createCompanionApi(invoke: Invoker): {
   guideAction: (
     action: 'did_it' | 'repeat' | 'cant_find' | 'manual' | 'stop' | 'press'
   ) => Promise<SessionSnapshot>
+  startAgent: (input: { text: string }) => Promise<AgentStatus | null>
+  getAgentStatus: () => Promise<AgentStatus | null>
+  pauseAgent: (taskId: string) => Promise<AgentStatus | null>
+  resumeAgent: (taskId: string) => Promise<AgentStatus | null>
+  stopAgent: (taskId: string) => Promise<AgentStatus | null>
+  confirmAgent: (taskId: string, approvalId: string) => Promise<AgentStatus | null>
+  guideAgent: (taskId: string) => Promise<SessionSnapshot>
+  onAgentStatus: (listener: (status: AgentStatus | null) => void) => () => void
 } {
   return {
     getCapabilities: () =>
@@ -142,10 +156,34 @@ export function createCompanionApi(invoke: Invoker): {
       invoke(companionIpcChannels.setDeveloperInspection, {
         enabled
       }) as Promise<SessionSnapshot>,
+    setDiagnosticTelemetry: (enabled) =>
+      invoke(companionIpcChannels.setDiagnosticTelemetry, {
+        enabled
+      }) as Promise<SessionSnapshot>,
+    dismissOnboarding: () =>
+      invoke(companionIpcChannels.dismissOnboarding, {}) as Promise<SessionSnapshot>,
     setVoice: (input) => invoke(companionIpcChannels.setVoice, input) as Promise<SessionSnapshot>,
     setAssistantMode: (input) =>
       invoke(companionIpcChannels.setAssistantMode, input) as Promise<SessionSnapshot>,
     guideAction: (action) =>
-      invoke(companionIpcChannels.guideAction, { action }) as Promise<SessionSnapshot>
+      invoke(companionIpcChannels.guideAction, { action }) as Promise<SessionSnapshot>,
+    startAgent: (input) =>
+      invoke(companionIpcChannels.startAgent, input) as Promise<AgentStatus | null>,
+    getAgentStatus: () =>
+      invoke(companionIpcChannels.getAgentStatus, {}) as Promise<AgentStatus | null>,
+    pauseAgent: (taskId) =>
+      invoke(companionIpcChannels.pauseAgent, { taskId }) as Promise<AgentStatus | null>,
+    resumeAgent: (taskId) =>
+      invoke(companionIpcChannels.resumeAgent, { taskId }) as Promise<AgentStatus | null>,
+    stopAgent: (taskId) =>
+      invoke(companionIpcChannels.stopAgent, { taskId }) as Promise<AgentStatus | null>,
+    confirmAgent: (taskId, approvalId) =>
+      invoke(companionIpcChannels.confirmAgent, {
+        taskId,
+        approvalId
+      }) as Promise<AgentStatus | null>,
+    guideAgent: (taskId) =>
+      invoke(companionIpcChannels.guideAgent, { taskId }) as Promise<SessionSnapshot>,
+    onAgentStatus: (listener) => listen(listener)
   }
 }

@@ -84,6 +84,8 @@ const ipcSchemas = {
     .strict(),
   [companionIpcChannels.stopSharing]: emptyArgsSchema,
   [companionIpcChannels.setDeveloperInspection]: z.object({ enabled: z.boolean() }).strict(),
+  [companionIpcChannels.setDiagnosticTelemetry]: z.object({ enabled: z.boolean() }).strict(),
+  [companionIpcChannels.dismissOnboarding]: emptyArgsSchema,
   [companionIpcChannels.setVoice]: z
     .object({ enabled: z.boolean(), readRepliesAloud: z.boolean() })
     .strict(),
@@ -96,7 +98,16 @@ const ipcSchemas = {
     .strict(),
   [companionIpcChannels.guideAction]: z
     .object({ action: z.enum(['did_it', 'repeat', 'cant_find', 'manual', 'stop', 'press']) })
-    .strict()
+    .strict(),
+  [companionIpcChannels.startAgent]: z.object({ text: z.string().max(2000) }).strict(),
+  [companionIpcChannels.getAgentStatus]: emptyArgsSchema,
+  [companionIpcChannels.pauseAgent]: z.object({ taskId: z.string().min(1).max(80) }).strict(),
+  [companionIpcChannels.resumeAgent]: z.object({ taskId: z.string().min(1).max(80) }).strict(),
+  [companionIpcChannels.stopAgent]: z.object({ taskId: z.string().min(1).max(80) }).strict(),
+  [companionIpcChannels.confirmAgent]: z
+    .object({ taskId: z.string().min(1).max(80), approvalId: z.string().min(1).max(80) })
+    .strict(),
+  [companionIpcChannels.guideAgent]: z.object({ taskId: z.string().min(1).max(80) }).strict()
 } satisfies Record<CompanionIpcChannel, z.ZodType>
 
 export function parseCompanionIpcArgs(channel: string, args: readonly unknown[]): unknown {

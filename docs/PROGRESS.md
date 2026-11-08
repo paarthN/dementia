@@ -3,8 +3,8 @@
 Living status for Companion. Update this file at the end of each phase with commands run and what actually worked. Do not mark a phase complete because the UI merely resembles the spec.
 
 **Spec version:** 1.1 — 2026-11-04, macOS-first  
-**Last updated:** 2026-11-05  
-**Product status:** Phases 0–7 are in the repo. Chat can use demo mode on this Mac, or a cloud assistant through a server you run. Phase 8 was not started. A separate computer-use track can ask a cloud model for one tool at a time and can open its own Chromium window. Chat does not start that loop yet. Confirmations for that track are checked again when they are accepted. See [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
+**Last updated:** 2026-11-06  
+**Product status:** Phases 0–7 are in the repo. Chat can use demo mode on this Mac, or a cloud assistant through a server you run. Product Phase 8, one OAuth mail or calendar provider, was not started. Product Phase 9 has a first slice: onboarding limits, larger controls, a local crash note that stays off, and reminder recovery after a long wait or a clock jump. The app is still not notarized and is not a public release. See [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
 
 ## Where to read next
 
@@ -22,7 +22,7 @@ Living status for Companion. Update this file at the end of each phase with comm
 
 ## Next action
 
-**Phase 8 — one OAuth mail or calendar provider.** Not started. Phase 7 passed the checks recorded below on 2026-11-04.
+**Product Phase 9 — quality and packaging, first slice only.** OAuth mail and calendar are still not started. Notarization is still blocked: there is no Developer ID certificate. Do not ship the app.
 
 ## Phase checklist
 
@@ -66,6 +66,27 @@ Re-verified on 2026-11-04 before Phase 0 was treated as ready.
 | macOS helper verified | Yes. `system.ping` and real Accessibility reads succeeded. See the Phase 5 log for what was not captured. |
 
 ## Log
+
+### 2026-11-06 — Product Phase 9, first slice
+
+Help and a first-run card state what Companion can and cannot do, including that mail, calendar, purchases, and passwords are out of reach, and that this copy is not notarized. Buttons and fields in the panel are at least 44px tall. A crash note is written only after Settings allows it, stays in the app's diagnostics folder, and drops secrets, email addresses, and home-folder names. It is not uploaded. Quit stops an in-progress computer-use task and still closes the helper and Agent Browser. A reminder farther out than JavaScript can time in one wait is split into shorter waits. After the clock jumps past a due reminder, the next check marks it missed and does not fire the old timer.
+
+Commands from the repo root on 2026-11-06:
+
+- `npm run typecheck` — passed.
+- `npm run lint` — passed.
+- `npm test` — passed, 184 tests, 9 skipped. The skips are the same opt-in Mac runs as before.
+- `npm run build` — passed. Production bundle only. No installer.
+
+The Electron window was not opened, so the first-run card was not clicked. Not done: a Developer ID signature, notarization, Gatekeeper, copying into `/Applications`, a real sleep or second-monitor check, a usability session, and OAuth mail or calendar.
+
+### 2026-11-05 — Computer-use packaging
+
+`npm run package:mac` built an ad-hoc `Companion.app` for Apple Silicon. The helper answered a ping after the app was copied to a temporary folder, and that copy was deleted. Agent Browser's Chromium is inside the app. Gatekeeper still rejects the app. No Developer ID signature and no notarization. A separate run typed into a temporary TextEdit note, focused Finder, opened System Settings Displays, and opened the local Agent Browser page. No paid model call was made. Product Phase 8 was not started. The checks are in [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
+
+### 2026-11-05 — Computer-use Phase 7
+
+Chat shows a progress strip with the goal, the current step, Pause, and Stop. Do this for me starts the computer-use loop after cloud consent. Send stays on the older path, and speech does not confirm a step. A finished step is shown only after it was verified. The checks are in [COMPUTER_AGENT_PROGRESS.md](COMPUTER_AGENT_PROGRESS.md).
 
 ### 2026-11-05 — Computer-use Phase 6
 
