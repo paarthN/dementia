@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { FavoriteKind } from '../../shared/favorites'
 import type { Reminder } from '../../shared/reminders'
 import type { SessionSnapshot } from '../../shared/session'
+import { SegmentedChoice } from './controls'
 
 export function HomePanel({
   session,
@@ -47,33 +48,41 @@ export function HomePanel({
   }
 
   return (
-    <div className="home">
+    <div className="page">
       <p className="lede">Apps, sites, and reminders. Chat is where you talk to Companion.</p>
-      <section>
+      <section className="block">
         <h2>Favorite apps</h2>
         {apps.length === 0 ? <p className="muted">No apps yet. Add one below.</p> : null}
-        {apps.map((favorite) => (
-          <FavoriteRow
-            key={favorite.id}
-            favoriteId={favorite.id}
-            title={favorite.title}
-            onNotice={onNotice}
-          />
-        ))}
+        {apps.length > 0 ? (
+          <div className="rows">
+            {apps.map((favorite) => (
+              <FavoriteRow
+                key={favorite.id}
+                favoriteId={favorite.id}
+                title={favorite.title}
+                onNotice={onNotice}
+              />
+            ))}
+          </div>
+        ) : null}
       </section>
-      <section>
+      <section className="block">
         <h2>Favorite websites</h2>
         {sites.length === 0 ? <p className="muted">No websites yet.</p> : null}
-        {sites.map((favorite) => (
-          <FavoriteRow
-            key={favorite.id}
-            favoriteId={favorite.id}
-            title={favorite.title}
-            onNotice={onNotice}
-          />
-        ))}
+        {sites.length > 0 ? (
+          <div className="rows">
+            {sites.map((favorite) => (
+              <FavoriteRow
+                key={favorite.id}
+                favoriteId={favorite.id}
+                title={favorite.title}
+                onNotice={onNotice}
+              />
+            ))}
+          </div>
+        ) : null}
       </section>
-      <section>
+      <section className="block">
         <h2>Common tasks</h2>
         <div className="grid">
           <button type="button" className="tile" onClick={() => onCompose('Search for ')}>
@@ -116,16 +125,20 @@ export function HomePanel({
           </button>
         </div>
       </section>
-      <section>
+      <section className="block">
         <h2>Reminders</h2>
         <p className="muted">
           Companion can remind you only while it is open. If it was quit, missed reminders show here
           the next time it starts.
         </p>
         {reminders.length === 0 ? <p className="muted">No reminders yet.</p> : null}
-        {reminders.map((reminder) => (
-          <ReminderRow key={reminder.id} reminder={reminder} onNotice={onNotice} />
-        ))}
+        {reminders.length > 0 ? (
+          <div className="rows">
+            {reminders.map((reminder) => (
+              <ReminderRow key={reminder.id} reminder={reminder} onNotice={onNotice} />
+            ))}
+          </div>
+        ) : null}
         <form
           className="form"
           onSubmit={(event) => {
@@ -164,20 +177,26 @@ export function HomePanel({
           }}
         >
           <input
+            name="reminder"
             aria-label="Reminder"
+            autoComplete="off"
             value={reminderTitle}
             onChange={(event) => setReminderTitle(event.target.value)}
             placeholder="Call the pharmacy"
           />
           <input
+            name="reminder-date"
             aria-label="Reminder date"
             type="date"
+            autoComplete="off"
             value={reminderDate}
             onChange={(event) => setReminderDate(event.target.value)}
           />
           <input
+            name="reminder-time"
             aria-label="Reminder time"
             type="time"
+            autoComplete="off"
             value={reminderTime}
             onChange={(event) => setReminderTime(event.target.value)}
           />
@@ -186,41 +205,49 @@ export function HomePanel({
           </button>
         </form>
       </section>
-      <form
-        className="form"
-        onSubmit={(event) => {
-          event.preventDefault()
-          void save(pendingDomain)
-        }}
-      >
+      <section className="block">
         <h2>Add a favorite</h2>
-        <select
-          value={kind}
-          onChange={(event) => setKind(event.target.value as FavoriteKind)}
-          aria-label="Favorite type"
-        >
-          <option value="application">App</option>
-          <option value="website">Website</option>
-        </select>
-        <input
-          aria-label="Favorite name"
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          placeholder="Name"
-        />
-        <input
-          aria-label={kind === 'application' ? 'Bundle ID' : 'Website address'}
-          value={target}
-          onChange={(event) => {
-            setTarget(event.target.value)
-            setPendingDomain(false)
+        <form
+          className="form"
+          onSubmit={(event) => {
+            event.preventDefault()
+            void save(pendingDomain)
           }}
-          placeholder={kind === 'application' ? 'com.apple.TextEdit' : 'https://example.com'}
-        />
-        <button type="submit" className="primary">
-          {pendingDomain ? 'Save the new domain' : 'Save favorite'}
-        </button>
-      </form>
+        >
+          <SegmentedChoice
+            label="Favorite type"
+            value={kind}
+            options={[
+              { value: 'application', label: 'App' },
+              { value: 'website', label: 'Website' }
+            ]}
+            onChange={setKind}
+          />
+          <input
+            name="favorite-name"
+            aria-label="Favorite name"
+            autoComplete="off"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="Name"
+          />
+          <input
+            name="favorite-target"
+            aria-label={kind === 'application' ? 'Bundle ID' : 'Website address'}
+            autoComplete="off"
+            spellCheck={false}
+            value={target}
+            onChange={(event) => {
+              setTarget(event.target.value)
+              setPendingDomain(false)
+            }}
+            placeholder={kind === 'application' ? 'com.apple.TextEdit' : 'https://example.com'}
+          />
+          <button type="submit" className="primary">
+            {pendingDomain ? 'Save the new domain' : 'Save favorite'}
+          </button>
+        </form>
+      </section>
     </div>
   )
 }

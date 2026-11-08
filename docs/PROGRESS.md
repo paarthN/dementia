@@ -3,7 +3,7 @@
 Living status for Companion. Update this file at the end of each phase with commands run and what actually worked. Do not mark a phase complete because the UI merely resembles the spec.
 
 **Spec version:** 1.1 — 2026-11-04, macOS-first  
-**Last updated:** 2026-11-04  
+**Last updated:** 2026-11-05  
 **Product status:** Phases 0–7 are in the repo. Chat can use demo mode on this Mac, or a cloud assistant through a server you run. Phase 8 was not started.
 
 ## Where to read next
@@ -61,11 +61,40 @@ Re-verified on 2026-11-04 before Phase 0 was treated as ready.
 | Node | 22.22.2 |
 | Package manager | npm 10.9.3 |
 | Swift | 6.1.2, command-line tools |
-| Last typecheck | 2026-11-04, `npm run typecheck` passed |
-| Last tests | 2026-11-04, `npm test` passed (69 passed, 3 skipped) |
+| Last typecheck | 2026-11-05, `npm run typecheck` passed |
+| Last tests | 2026-11-05, `npm test` passed (100 passed, 3 skipped) |
 | macOS helper verified | Yes. `system.ping` and real Accessibility reads succeeded. See the Phase 5 log for what was not captured. |
 
 ## Log
+
+### 2026-11-05 — Panel controls at a normal size
+
+Buttons, inputs, and the sidebar are 32px tall with an 8px radius. Switches are 36×22. The content-scale slider uses a 4px track and a 16px thumb. Text still follows Comfortable, Large, and Extra large. Tailwind 4.3.4 and Radix (switch, radio group, slider, separator) style the panel only. The executor and the Swift helper were not changed. Checked in the renderer at 1040×720 with a stand-in session, on Home, Settings, and Chat. The Electron window itself was not clicked through.
+
+Commands from the repo root, before the size follow-up (stylesheet only after that):
+
+- `npm run typecheck` — passed.
+- `npm run lint` — passed.
+- `npm test` — passed, 100 tests, 3 skipped.
+
+### 2026-11-05 — Button shape and press
+
+Action buttons are 12px rounded and 44px tall, with 16px of side padding. Home tiles are a larger 16px rounded surface. The selected setting fills in, instead of showing only a thin ring. Hover changes the background on a fine pointer, and a press scales the button down slightly. Reduce motion turns that movement off. Tailwind and Radix are still not in the app. The window was not clicked through.
+
+### 2026-11-05 — Panel spacing
+
+Home, Settings, Chat, and Help now share one spacing scale: 32px between sections, 12px inside a section, 8px between controls, and 32px page edges. Settings groups related controls instead of stacking a heading on every control. Buttons and inputs are 44px tall. The executor and the Swift helper were not changed. The window was not clicked through in this pass.
+
+### 2026-11-05 — Chat task strip
+
+The chat panel shows one strip while a task is waiting or running: the request, a short status, the current step, and the last verified result. Approval uses the existing confirm label. Screen access offers Allow, Show me how instead, and Stop. Send stays disabled until that step is confirmed, cancelled, or stopped. Listening still only fills the message box. Pause is absent because chat has no pause control. The executor and the Swift helper source were not changed. The window was not clicked through.
+
+Commands from the repo root:
+
+- `npm run typecheck` — passed.
+- `npm run lint` — passed.
+- `npm test` — passed, 100 tests, 3 skipped.
+- `npm run build:helper` — passed. The binary was missing, so it was rebuilt and ad-hoc signed. Swift source was not edited.
 
 ### 2026-11-04 — Open installed apps by name
 

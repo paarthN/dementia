@@ -52,6 +52,12 @@ Local builds use a stable ad-hoc signature so Accessibility permission survives 
 
 **If this is wrong:** ad-hoc signatures still reset TCC on some macOS versions, and developers will re-grant Accessibility after every rebuild until Phase 9.
 
+## Panel styling
+
+The panel uses Tailwind CSS 4.3.4 (`@tailwindcss/vite` 4.3.4) and four Radix packages: switch 1.4.1, radio group 1.5.1, slider 1.6.1, and separator 1.2.0. Themes, text size, and spacing stay in `panel.css`. Controls are normal desktop size: 32px buttons, a 22px switch, a 16px slider thumb. No other component kit.
+
+**If this is wrong:** a later pass that wants the 44px targets back has to change those sizes in `panel.css` without dropping the text-size setting.
+
 ## Computer-use agent
 
 The new multi-step agent extends the existing orchestrator, tool registry, and policy engine through one shared authorized executor. It does not get a second, weaker policy. Legacy chat and `/v1/interpret` stay. Model calls remain behind the existing proxy. Recorded 2026-11-05 during the expansion audit, before any agent code.

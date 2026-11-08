@@ -109,3 +109,18 @@ No real autonomous Mac action exists yet. The fake provider never calls OpenAI. 
 **Not verified:** A live TextEdit press, a fresh screenshot, and Stop during a real helper call.  
 **Blockers:** None for a review of Phase 1.  
 **Next phase:** Phase 2 after approval.
+
+## Panel task strip
+
+Chat now keeps the running request in one strip: the words the user asked, a short status, the current step, and the last verified result. An approval names what will happen, what will change, and uses the existing confirm label. Screen access shows that one reason, plus Allow, Show me how instead, and Stop. Send stays off until the user confirms, cancels, or stops, and listening only fills the message box.
+
+Pause is not on the strip. The current chat task has no pause control, and a button that did nothing would be a false control. Stop still cancels the task.
+
+The executor and the Swift helper source were not changed. The helper binary was rebuilt so the existing helper tests could run. The strip was not clicked in the Electron window.
+
+Commands from the repo root on 2026-11-05:
+
+- `npm run typecheck` — passed.
+- `npm run lint` — passed.
+- `npm test` — passed, 100 tests, 3 skipped. The skips are the unset `COMPANION_REAL_LAUNCH` and `COMPANION_HANDS_ON` files.
+- `npm run build:helper` — passed. Release binary linked and ad-hoc signed. Swift source was not edited.

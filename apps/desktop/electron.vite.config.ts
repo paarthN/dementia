@@ -1,4 +1,5 @@
 import { resolve } from 'path'
+import tailwindcss from '@tailwindcss/vite'
 import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import type { Plugin } from 'vite'
@@ -34,6 +35,6 @@ export default defineConfig({
         }
       }
     },
-    plugins: [react(), externalizeReactPreamble()]
+    plugins: [react(), tailwindcss(), externalizeReactPreamble()]
   }
 })

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import { agentProgressView, draftFromSpeech } from '../../shared/agentProgressView'
 import type { SessionSnapshot } from '../../shared/session'
+import { AgentProgress } from './AgentProgress'
 
 const suggestions = [
   'Open TextEdit',
@@ -46,15 +48,6 @@ function speechCtor(): (new () => BrowserSpeech) | null {
   return host.SpeechRecognition ?? host.webkitSpeechRecognition ?? null
 }
 
-const stoppable = new Set([
-  'created',
-  'planning',
-  'awaiting_permission',
-  'awaiting_confirmation',
-  'executing',
-  'verifying'
-])
-
 export function ChatPanel({
   session,
   draft,
@@ -75,10 +68,15 @@ export function ChatPanel({
   const sendingRef = useRef(false)
   const spokenId = useRef<string | null>(null)
   const latest = session.messages.at(-1)
-  const task = session.activeTask
+  const progress = agentProgressView({
+    messages: session.messages,
+    activeTask: session.activeTask,
+    pendingApproval: session.pendingApproval
+  })
+  const holdComposer = progress?.blocksComposer === true
 
   async function send(text = draft): Promise<void> {
-    if (sendingRef.current) {
+    if (sendingRef.current || holdComposer) {
       return
     }
     sendingRef.current = true
@@ -133,8 +131,7 @@ export function ChatPanel({
     next.interimResults = true
     next.onresult = (event) => {
       sessionText = transcriptFrom(event.results)
-      const combined = [spoken.current, sessionText].filter(Boolean).join(' ').trim()
-      onDraftChange(combined)
+      onDraftChange(draftFromSpeech(spoken.current, sessionText))
     }
     next.onerror = (event) => {
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
@@ -270,64 +267,7 @@ export function ChatPanel({
           </article>
         ))}
       </div>
-      {session.pendingApproval ? (
-        <section className="bubble" aria-label="Approval">
-          <p>{session.pendingApproval.summary}</p>
-          <button
-            type="button"
-            className="primary"
-            onClick={() =>
-              void window.companion.confirmChat(
-                session.pendingApproval?.taskId ?? '',
-                session.pendingApproval?.approvalId ?? ''
-              )
-            }
-          >
-            {session.pendingApproval.confirmLabel}
-          </button>
-          <button
-            type="button"
-            className="quiet"
-            onClick={() => {
-              const previous = [...session.messages]
-                .reverse()
-                .find((message) => message.role === 'user')
-              if (previous) {
-                onDraftChange(previous.text)
-              }
-              void window.companion.cancelChat(session.pendingApproval?.taskId ?? '')
-            }}
-          >
-            Edit
-          </button>
-          <button
-            type="button"
-            className="quiet"
-            onClick={() => void window.companion.cancelChat(session.pendingApproval?.taskId ?? '')}
-          >
-            Cancel
-          </button>
-        </section>
-      ) : null}
-      {task && task.state === 'awaiting_permission' ? (
-        <section className="bubble" aria-label="Screen access">
-          <p>Allow screen access and I will look at the other app.</p>
-          <button
-            type="button"
-            className="primary"
-            onClick={() => void window.companion.setScreenAccess(true)}
-          >
-            Allow screen access
-          </button>
-          <button
-            type="button"
-            className="quiet"
-            onClick={() => void window.companion.cancelChat(task.id)}
-          >
-            Not now
-          </button>
-        </section>
-      ) : null}
+      <AgentProgress session={session} onEdit={onDraftChange} />
       {session.guide?.status === 'showing' && session.guide.highlight ? (
         <div className="guide-bar">
           <p>{session.guide.instruction}</p>
@@ -354,22 +294,13 @@ export function ChatPanel({
           {session.notice}
         </p>
       ) : null}
-      {task && stoppable.has(task.state) ? (
-        <button
-          type="button"
-          className="quiet"
-          onClick={() => void window.companion.cancelChat(task.id)}
-        >
-          Stop
-        </button>
-      ) : null}
       <div className="suggestion-row">
         {suggestions.map((suggestion) => (
           <button
             key={suggestion}
             type="button"
             className="quiet"
-            disabled={sending}
+            disabled={sending || holdComposer}
             onClick={() => void send(suggestion)}
           >
             {suggestion}
@@ -385,7 +316,9 @@ export function ChatPanel({
       >
         <textarea
           id="chat-message"
+          name="message"
           aria-label="Message"
+          autoComplete="off"
           value={draft}
           placeholder="Ask Companion"
           onChange={(event) => onDraftChange(event.target.value)}
@@ -406,14 +339,20 @@ export function ChatPanel({
           >
             {listening ? 'Stop' : 'Listen'}
           </button>
-          <button type="submit" className="primary" disabled={sending}>
+          <button type="submit" className="primary" disabled={sending || holdComposer}>
             {sending ? 'Sending' : 'Send'}
           </button>
         </div>
       </form>
-      {listening || voiceNote ? (
+      {listening || voiceNote || holdComposer ? (
         <p className="status-line" role="status">
-          {listening ? 'Listening. Click Stop to end.' : voiceNote}
+          {listening
+            ? holdComposer
+              ? 'Listening. Words stay in the message. This will not approve the action.'
+              : 'Listening. Click Stop to end.'
+            : holdComposer
+              ? 'Use the buttons above before sending another message.'
+              : voiceNote}
         </p>
       ) : null}
     </div>

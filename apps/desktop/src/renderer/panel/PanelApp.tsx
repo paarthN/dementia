@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { textScalePixels } from '../../shared/preferences'
 import type { PanelView, SessionSnapshot } from '../../shared/session'
 import { browserSpeechAvailable, micLabel, micStatus } from '../../shared/voice'
+import { Separator } from '@radix-ui/react-separator'
 import { ChatPanel } from './ChatPanel'
 import { HelpPanel } from './HelpPanel'
 import { HomePanel } from './HomePanel'
@@ -74,8 +75,13 @@ export function PanelApp(): React.JSX.Element {
       data-motion={session.preferences.appearance.reduceMotion ? 'reduce' : 'full'}
       style={{ fontSize }}
     >
+      <a className="skip" href="#workspace">
+        Skip to content
+      </a>
       <aside className="sidebar">
-        <p className="brand">Companion</p>
+        <p className="brand" translate="no">
+          Companion
+        </p>
         <nav className="nav" aria-label="Sections">
           {nav.map((item) => (
             <button
@@ -88,6 +94,7 @@ export function PanelApp(): React.JSX.Element {
             </button>
           ))}
         </nav>
+        <Separator className="sidebar-rule" orientation="horizontal" decorative />
         <footer className="sidebar-foot">
           <p>{screenLabel}</p>
           <p>{micLabel(microphone)}</p>
@@ -117,38 +124,48 @@ export function PanelApp(): React.JSX.Element {
       </aside>
       <section className="workspace">
         <header className="workspace-head">
-          <h1>{titles[view]}</h1>
+          <h1 id="workspace" tabIndex={-1}>
+            {titles[view]}
+          </h1>
         </header>
-        {notice ? <p className="notice">{notice}</p> : null}
-        {session.dueReminders.map((item) => (
-          <section key={`${item.reminderId}-${item.kind}`} className="notice" aria-label="Reminder">
-            <p>{item.summary}</p>
-            <div className="actions">
-              <button
-                type="button"
-                className="primary"
-                onClick={() => void window.companion.completeReminder(item.reminderId)}
-              >
-                Done
-              </button>
-              <button
-                type="button"
-                className="quiet"
-                onClick={() => void window.companion.snoozeReminder(item.reminderId)}
-              >
-                Snooze 10 minutes
-              </button>
-              <button
-                type="button"
-                className="quiet"
-                onClick={() => void window.companion.openPanel('chat')}
-              >
-                Open
-              </button>
-            </div>
-          </section>
-        ))}
         <div className={view === 'chat' ? 'workspace-body is-chat' : 'workspace-body'}>
+          {notice || session.dueReminders.length > 0 ? (
+            <div className="banners">
+              {notice ? <p className="notice">{notice}</p> : null}
+              {session.dueReminders.map((item) => (
+                <section
+                  key={`${item.reminderId}-${item.kind}`}
+                  className="notice"
+                  aria-label="Reminder"
+                >
+                  <p>{item.summary}</p>
+                  <div className="actions">
+                    <button
+                      type="button"
+                      className="primary"
+                      onClick={() => void window.companion.completeReminder(item.reminderId)}
+                    >
+                      Done
+                    </button>
+                    <button
+                      type="button"
+                      className="quiet"
+                      onClick={() => void window.companion.snoozeReminder(item.reminderId)}
+                    >
+                      Snooze 10 minutes
+                    </button>
+                    <button
+                      type="button"
+                      className="quiet"
+                      onClick={() => void window.companion.openPanel('chat')}
+                    >
+                      Open
+                    </button>
+                  </div>
+                </section>
+              ))}
+            </div>
+          ) : null}
           {view === 'home' ? (
             <HomePanel
               session={session}

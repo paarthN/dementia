@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { mascotColorIds, textScales, themeModes } from '../../shared/preferences'
 import type { SessionSnapshot } from '../../shared/session'
 import type { SystemSettingsSection } from '../../shared/systemSettings'
+import { ScaleControl, SegmentedChoice, SwitchRow } from './controls'
 
 const settingButtons: Array<{ section: SystemSettingsSection; label: string }> = [
   { section: 'text', label: 'Mac text size' },
@@ -28,210 +29,185 @@ export function SettingsPanel({
   }
 
   return (
-    <div>
-      <p className="muted">These controls change Companion. They do not change your Mac.</p>
+    <div className="page">
+      <p className="lede">These controls change Companion. They do not change your Mac.</p>
       {session.shortcutWarning ? <p className="notice">{session.shortcutWarning}</p> : null}
-      <h2>Text size</h2>
-      <div className="choice-row" role="group" aria-label="Text size">
-        {textScales.map((scale) => (
-          <button
-            key={scale}
-            type="button"
-            className="quiet"
-            aria-pressed={appearance.textScale === scale}
-            onClick={() => patch({ textScale: scale })}
-          >
-            {scale}
-          </button>
-        ))}
-      </div>
-      <h2>Content scale</h2>
-      <input
-        aria-label="Content scale"
-        type="range"
-        min={1}
-        max={1.6}
-        step={0.1}
-        value={appearance.contentScale}
-        onChange={(event) => patch({ contentScale: Number(event.target.value) })}
-      />
-      <h2>Theme</h2>
-      <div className="choice-row" role="group" aria-label="Theme">
-        {themeModes.map((theme) => (
-          <button
-            key={theme}
-            type="button"
-            className="quiet"
-            aria-pressed={appearance.theme === theme}
-            onClick={() => patch({ theme })}
-          >
-            {theme === 'system' ? 'Follow system' : theme}
-          </button>
-        ))}
-      </div>
-      <h2>Mascot color</h2>
-      <div className="choice-row" role="group" aria-label="Mascot color">
-        {mascotColorIds.map((color) => (
-          <button
-            key={color}
-            type="button"
-            className="quiet"
-            aria-pressed={appearance.mascotColorId === color}
-            onClick={() => patch({ mascotColorId: color, accentColorId: color })}
-          >
-            {color}
-          </button>
-        ))}
-      </div>
-      <label className="choice-row">
-        <input
-          type="checkbox"
-          checked={appearance.reduceMotion}
-          onChange={(event) => patch({ reduceMotion: event.target.checked })}
+      <section className="block">
+        <h2>Reading</h2>
+        <SegmentedChoice
+          label="Text size"
+          value={appearance.textScale}
+          options={textScales.map((scale) => ({ value: scale, label: scale }))}
+          onChange={(textScale) => patch({ textScale })}
         />
-        Reduce motion
-      </label>
-      <label className="choice-row">
-        <input
-          type="checkbox"
+        <ScaleControl
+          value={appearance.contentScale}
+          onChange={(contentScale) => patch({ contentScale })}
+        />
+        <SwitchRow
+          label="Extra line spacing"
           checked={session.preferences.accessibility.extraLineSpacing}
-          onChange={(event) => patch({ extraLineSpacing: event.target.checked })}
+          onCheckedChange={(extraLineSpacing) => patch({ extraLineSpacing })}
         />
-        Extra line spacing
-      </label>
-      <label className="choice-row">
-        <input
-          type="checkbox"
-          checked={session.preferences.startup.launchAtLogin}
-          onChange={(event) => void window.companion.setLaunchAtLogin(event.target.checked)}
+      </section>
+      <section className="block">
+        <h2>Appearance</h2>
+        <SegmentedChoice
+          label="Theme"
+          value={appearance.theme}
+          options={themeModes.map((theme) => ({
+            value: theme,
+            label: theme === 'system' ? 'Follow system' : theme
+          }))}
+          onChange={(theme) => patch({ theme })}
         />
-        Launch at login
-      </label>
-      <label className="choice-row">
-        <input
-          type="checkbox"
-          checked={session.preferences.startup.showNotifications}
-          onChange={(event) => void window.companion.setReminderNotifications(event.target.checked)}
+        <SegmentedChoice
+          label="Mascot color"
+          value={appearance.mascotColorId}
+          options={mascotColorIds.map((color) => ({ value: color, label: color }))}
+          onChange={(color) => patch({ mascotColorId: color, accentColorId: color })}
         />
-        Notify me when a reminder is due
-      </label>
-      <p className="muted">
-        Reminders stay on this Mac. Companion can notify you only while it is open. If the app was
-        quit, missed reminders show the next time it starts.
-      </p>
-      <p className="muted">
-        {session.preferences.privacy.assistantMode === 'cloud'
-          ? 'Cloud assistant connected. Demo mode still works on this Mac if you switch back.'
-          : 'Demo mode. Requests stay on this Mac.'}
-      </p>
-      <h2>Voice</h2>
-      <label className="choice-row">
-        <input
-          type="checkbox"
-          checked={session.preferences.voice.enabled}
-          onChange={(event) =>
-            void window.companion.setVoice({
-              enabled: event.target.checked,
-              readRepliesAloud: session.preferences.voice.readRepliesAloud
-            })
-          }
+        <SwitchRow
+          label="Reduce motion"
+          checked={appearance.reduceMotion}
+          onCheckedChange={(reduceMotion) => patch({ reduceMotion })}
         />
-        Use the microphone
-      </label>
-      <label className="choice-row">
-        <input
-          type="checkbox"
-          checked={session.preferences.voice.readRepliesAloud}
-          onChange={(event) =>
-            void window.companion.setVoice({
-              enabled: session.preferences.voice.enabled,
-              readRepliesAloud: event.target.checked
-            })
-          }
-        />
-        Read replies aloud
-      </label>
-      <p className="muted">
-        Click Listen in Chat to start the microphone, then click Stop. The words land in the message
-        box so you can edit them before sending. Companion does not save the recording. You can type
-        if the microphone is off or unavailable.
-      </p>
-      <h2>Cloud assistant</h2>
-      <CloudAssistant session={session} onNotice={onNotice} />
-      <h2>Privacy</h2>
-      <label className="choice-row">
-        <input
-          type="checkbox"
+      </section>
+      <section className="block">
+        <h2>Startup</h2>
+        <div className="toggle-list">
+          <SwitchRow
+            label="Launch at login"
+            checked={session.preferences.startup.launchAtLogin}
+            onCheckedChange={(enabled) => void window.companion.setLaunchAtLogin(enabled)}
+          />
+          <SwitchRow
+            label="Notify me when a reminder is due"
+            checked={session.preferences.startup.showNotifications}
+            onCheckedChange={(enabled) => void window.companion.setReminderNotifications(enabled)}
+          />
+        </div>
+        <p className="muted">
+          Reminders stay on this Mac. Companion can notify you only while it is open. If the app was
+          quit, missed reminders show the next time it starts.
+        </p>
+        <p className="muted">
+          {session.preferences.privacy.assistantMode === 'cloud'
+            ? 'Cloud assistant connected. Demo mode still works on this Mac if you switch back.'
+            : 'Demo mode. Requests stay on this Mac.'}
+        </p>
+      </section>
+      <section className="block">
+        <h2>Voice</h2>
+        <div className="toggle-list">
+          <SwitchRow
+            label="Use the microphone"
+            checked={session.preferences.voice.enabled}
+            onCheckedChange={(enabled) =>
+              void window.companion.setVoice({
+                enabled,
+                readRepliesAloud: session.preferences.voice.readRepliesAloud
+              })
+            }
+          />
+          <SwitchRow
+            label="Read replies aloud"
+            checked={session.preferences.voice.readRepliesAloud}
+            onCheckedChange={(readRepliesAloud) =>
+              void window.companion.setVoice({
+                enabled: session.preferences.voice.enabled,
+                readRepliesAloud
+              })
+            }
+          />
+        </div>
+        <p className="muted">
+          Click Listen in Chat to start the microphone, then click Stop. The words land in the
+          message box so you can edit them before sending. Companion does not save the recording.
+          You can type if the microphone is off or unavailable.
+        </p>
+      </section>
+      <section className="block">
+        <h2>Cloud assistant</h2>
+        <CloudAssistant session={session} onNotice={onNotice} />
+      </section>
+      <section className="block">
+        <h2>Privacy</h2>
+        <SwitchRow
+          label="Show screen inspection details"
           checked={session.preferences.privacy.developerInspection === true}
-          onChange={(event) => void window.companion.setDeveloperInspection(event.target.checked)}
+          onCheckedChange={(enabled) => void window.companion.setDeveloperInspection(enabled)}
         />
-        Show screen inspection details
-      </label>
-      <p className="muted">
-        Off by default. This lists names and roles from the last look. It does not save a
-        screenshot.
-      </p>
-      {session.preferences.privacy.developerInspection === true ? (
-        <section aria-label="Inspection details">
-          {session.inspectionView ? (
-            <>
-              <p>
-                {session.inspectionView.title
-                  ? `Window: ${session.inspectionView.title}`
-                  : 'No window title was shared.'}
-              </p>
-              <p>
-                {session.inspectionView.appName
-                  ? `App: ${session.inspectionView.appName}`
-                  : 'App name was not shared.'}
-              </p>
-              <ul>
-                {session.inspectionView.controls.length === 0 ? (
-                  <li>No controls were shared.</li>
-                ) : (
-                  session.inspectionView.controls.map((control, index) => (
-                    <li key={`${control.role}-${control.name}-${index}`}>
-                      {control.name || 'Unnamed'} ({control.role})
-                    </li>
-                  ))
-                )}
-              </ul>
-              {session.inspectionView.unknown.map((item) => (
-                <p key={item}>Unknown: {item}</p>
-              ))}
-            </>
-          ) : (
-            <p>Nothing has been inspected in this session.</p>
-          )}
-        </section>
-      ) : null}
-      <h2>Mac settings</h2>
-      <p className="muted">Opening one of these leaves the Mac setting for you to change.</p>
-      {settingButtons.map((item) => (
+        <p className="muted">
+          Off by default. This lists names and roles from the last look. It does not save a
+          screenshot.
+        </p>
+        {session.preferences.privacy.developerInspection === true ? (
+          <div className="group" aria-label="Inspection details">
+            {session.inspectionView ? (
+              <>
+                <p>
+                  {session.inspectionView.title
+                    ? `Window: ${session.inspectionView.title}`
+                    : 'No window title was shared.'}
+                </p>
+                <p>
+                  {session.inspectionView.appName
+                    ? `App: ${session.inspectionView.appName}`
+                    : 'App name was not shared.'}
+                </p>
+                <ul>
+                  {session.inspectionView.controls.length === 0 ? (
+                    <li>No controls were shared.</li>
+                  ) : (
+                    session.inspectionView.controls.map((control, index) => (
+                      <li key={`${control.role}-${control.name}-${index}`}>
+                        {control.name || 'Unnamed'} ({control.role})
+                      </li>
+                    ))
+                  )}
+                </ul>
+                {session.inspectionView.unknown.map((item) => (
+                  <p key={item}>Unknown: {item}</p>
+                ))}
+              </>
+            ) : (
+              <p>Nothing has been inspected in this session.</p>
+            )}
+          </div>
+        ) : null}
+      </section>
+      <section className="block">
+        <h2>Mac settings</h2>
+        <p className="muted">Opening one of these leaves the Mac setting for you to change.</p>
+        <div className="grid">
+          {settingButtons.map((item) => (
+            <button
+              key={item.section}
+              type="button"
+              className="tile"
+              onClick={() =>
+                void window.companion
+                  .openSystemSettings(item.section)
+                  .then((result) => onNotice(result.summary))
+              }
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
         <button
-          key={item.section}
           type="button"
-          className="tile"
+          className="primary"
           onClick={() =>
             void window.companion
-              .openSystemSettings(item.section)
-              .then((result) => onNotice(result.summary))
+              .resetAppearance()
+              .then(() => onNotice('Appearance is back to the default. Favorites are still here.'))
           }
         >
-          {item.label}
+          Reset to default
         </button>
-      ))}
-      <button
-        type="button"
-        className="primary"
-        onClick={() =>
-          void window.companion
-            .resetAppearance()
-            .then(() => onNotice('Appearance is back to the default. Favorites are still here.'))
-        }
-      >
-        Reset to default
-      </button>
+      </section>
     </div>
   )
 }
@@ -248,7 +224,7 @@ function CloudAssistant({
   const cloud = session.preferences.privacy.assistantMode === 'cloud'
 
   return (
-    <section aria-label="Cloud assistant">
+    <div className="group" aria-label="Cloud assistant">
       <p>
         Cloud mode sends the words you type, and a voice transcript after you send it, to the
         assistant server you choose. It does not send a screenshot or a saved recording. That server
@@ -268,16 +244,19 @@ function CloudAssistant({
         </button>
       ) : (
         <>
-          <label>
+          <label className="field">
             Assistant server
             <input
+              name="assistant-server"
               aria-label="Assistant server"
+              autoComplete="off"
+              spellCheck={false}
               value={origin}
               onChange={(event) => setOrigin(event.target.value)}
               placeholder="https://assistant.example.com"
             />
           </label>
-          <label className="choice-row">
+          <label className="check">
             <input
               type="checkbox"
               checked={consent}
@@ -305,6 +284,6 @@ function CloudAssistant({
           </button>
         </>
       )}
-    </section>
+    </div>
   )
 }
