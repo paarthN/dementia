@@ -7,6 +7,9 @@ const transitions: Record<
   idle: { start: 'observing' },
   observing: {
     observed: 'planning',
+    force_action: 'executing',
+    need_permission: 'awaiting_permission',
+    need_confirmation: 'awaiting_confirmation',
     pause: 'paused',
     stop: 'cancelled',
     fail: 'failed',
@@ -16,9 +19,11 @@ const transitions: Record<
   },
   planning: {
     begin_execution: 'executing',
+    force_action: 'executing',
     need_permission: 'awaiting_permission',
     need_confirmation: 'awaiting_confirmation',
     verified_done: 'completed',
+    keep_going: 'observing',
     pause: 'paused',
     stop: 'cancelled',
     fail: 'failed',

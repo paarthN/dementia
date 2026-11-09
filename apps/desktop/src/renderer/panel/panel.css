@@ -416,10 +416,10 @@ h2 {
 }
 
 .composer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
   gap: 10px;
-  align-items: end;
   padding-top: 4px;
 }
 
@@ -437,7 +437,8 @@ h2 {
 
 .composer-actions {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: wrap;
   gap: 8px;
 }
 

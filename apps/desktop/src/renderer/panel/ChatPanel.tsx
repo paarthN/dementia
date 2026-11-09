@@ -485,7 +485,7 @@ export function ChatPanel({
           </button>
           <button
             type="button"
-            className="quiet"
+            className="primary"
             disabled={sending || agentBusy(agentStatus) || Boolean(agentStatus?.approval)}
             onClick={() => {
               const text = draft.trim()
@@ -508,7 +508,7 @@ export function ChatPanel({
           >
             Do this for me
           </button>
-          <button type="submit" className="primary" disabled={sending}>
+          <button type="submit" className="quiet" disabled={sending}>
             {sending ? 'Sending' : 'Send'}
           </button>
         </div>

@@ -21,6 +21,11 @@ export interface PolicyRequest {
   screenPermission: boolean
   claimedRisk?: RiskLevel
   approval?: PolicyApproval | null
+  /**
+   * The person already allowed ordinary clicking and typing on this surface for this
+   * task. Computed in code from a TaskScope; a model cannot ask for it.
+   */
+  scopeApproved?: boolean
 }
 
 export type PolicyDecision =
@@ -42,7 +47,8 @@ const screenTools = new Set([
   'desktop.clickElement',
   'desktop.setText',
   'desktop.keyPress',
-  'desktop.scroll'
+  'desktop.scroll',
+  'desktop.clickPoint'
 ])
 
 export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): PolicyDecision {
@@ -158,8 +164,12 @@ export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): Po
   if (
     (request.tool === 'desktop.clickElement' ||
       request.tool === 'desktop.setText' ||
-      request.tool === 'desktop.keyPress') &&
-    !approvalMatches(request)
+      request.tool === 'desktop.keyPress' ||
+      request.tool === 'desktop.clickPoint') &&
+    !approvalMatches(request) &&
+    // clickPoint has no named control to re-find, so it keeps its own card even when
+    // the task is scoped.
+    !(request.scopeApproved === true && request.tool !== 'desktop.clickPoint')
   ) {
     return {
       effect: 'confirm',
@@ -172,7 +182,8 @@ export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): Po
     (request.tool === 'browser.click' ||
       request.tool === 'browser.fill' ||
       request.tool === 'browser.press') &&
-    !approvalMatches(request)
+    !approvalMatches(request) &&
+    request.scopeApproved !== true
   ) {
     return {
       effect: 'confirm',
@@ -181,7 +192,10 @@ export function decidePolicy(registry: ToolRegistry, request: PolicyRequest): Po
     }
   }
 
-  if (risk === 'R2' && !approvalMatches(request)) {
+  // scopeApproved is only ever true for the handful of tools scopeCovers() recognises,
+  // so this cannot widen anything else that happens to be R2 — screen.captureOnce still
+  // asks for its own consent.
+  if (risk === 'R2' && !approvalMatches(request) && request.scopeApproved !== true) {
     return {
       effect: 'confirm',
       risk,
@@ -273,6 +287,9 @@ function desktopActionPreview(tool: string, input: Record<string, unknown>): str
   }
   if (tool === 'desktop.setText') {
     return `I am about to type into ${name}. Type it?`
+  }
+  if (tool === 'desktop.clickPoint') {
+    return 'I am about to click a spot on the screen. Click it?'
   }
   const chord = typeof input.chord === 'string' ? input.chord.slice(0, 40) : 'a key'
   return `I am about to press the ${chord} key. Press it?`

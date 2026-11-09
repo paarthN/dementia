@@ -1,6 +1,8 @@
+import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { chmod, mkdir } from 'node:fs/promises'
+import { chmod, mkdir, readlink } from 'node:fs/promises'
+import { join } from 'node:path'
 import type { BrowserContext, Locator, Page, Route } from 'playwright'
 import { isDevOnlyRuntimePath } from '../../packaging/bundledRuntime'
 import { redactSecretText } from '../AgentPrompt'
@@ -8,16 +10,30 @@ import { desktopKeyChords } from './DesktopAutomationPort'
 import {
   browserRoles,
   browserSnapshotTtlMs,
+  browserScopedTargetCap,
+  browserTargetSoftCap,
   browserTextLimit,
   type BrowserAutomationPort,
   type BrowserElementInput,
   type BrowserObservation,
+  type BrowserObserveInput,
   type BrowserTab,
   type BrowserOutcome,
   type BrowserStatus,
-  type BrowserTarget
+  type BrowserTarget,
+  type BrowserWithin
 } from './BrowserAutomationPort'
 import { classifyNavigation, isSensitiveBrowserField, type ClassifyOptions } from './browserSafety'
+import {
+  actionExpectationMet,
+  assignObservationIds,
+  meaningfulPageChange,
+  preferTargets,
+  preferUniqueTarget,
+  resolveTargetQuery,
+  targetIdentityKey,
+  targetsMatchingIdentity
+} from './browserTargeting'
 
 const imageByteLimit = 1_500_000
 const navigationTimeoutMs = 15_000
@@ -63,6 +79,7 @@ export interface PlaywrightAdapterOptions {
   fixtureOrigins?: readonly string[]
   snapshotTtlMs?: number
   browserExecutable?: string | null
+  readPageText?: (signal?: AbortSignal) => Promise<string>
 }
 
 function browserProcessEnv(): Record<string, string> {
@@ -94,6 +111,144 @@ export function agentBrowserLaunchOptions(headed: boolean): {
     viewport: { width: 1100, height: 720 },
     args: ['--disable-extensions', '--no-first-run', '--no-default-browser-check']
   }
+}
+
+export function agentBrowserProfileBusy(message: string): boolean {
+  return /processsingleton|already in use|profile is in use|existing browser session/i.test(message)
+}
+
+export function singletonLockPid(target: string): number | null {
+  const match = /-(\d+)$/.exec(target.trim())
+  if (!match) {
+    return null
+  }
+  const pid = Number(match[1])
+  return Number.isInteger(pid) && pid > 0 ? pid : null
+}
+
+export function commandOwnsAgentBrowser(command: string, profileDir: string): boolean {
+  return command.includes(profileDir) && /Google Chrome for Testing|Chromium/i.test(command)
+}
+
+/**
+ * True when the frontmost app is Companion's own browser. Used to decide which surface
+ * to observe: an allowlist of ordinary Mac apps cannot be complete, but the one browser
+ * Companion launches itself is knowable.
+ */
+export function isAgentBrowserApp(appName: string): boolean {
+  return /^(chromium|google chrome for testing)$/i.test(appName.trim())
+}
+
+export async function releaseLockedAgentBrowser(
+  profileDir: string,
+  deps?: {
+    lockTarget?: (dir: string) => Promise<string>
+    commandOf?: (pid: number) => Promise<string>
+    kill?: (pid: number, signal: NodeJS.Signals) => void
+    alive?: (pid: number) => boolean
+    wait?: (ms: number) => Promise<void>
+  }
+): Promise<boolean> {
+  const lockTarget = deps?.lockTarget ?? ((dir: string) => readlink(join(dir, 'SingletonLock')))
+  const commandOf = deps?.commandOf ?? processCommand
+  const kill = deps?.kill ?? ((pid: number, signal: NodeJS.Signals) => process.kill(pid, signal))
+  const alive =
+    deps?.alive ??
+    ((pid: number) => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    })
+  const wait = deps?.wait ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
+  let target: string
+  try {
+    target = await lockTarget(profileDir)
+  } catch {
+    return false
+  }
+  const pid = singletonLockPid(target)
+  if (!pid) {
+    return false
+  }
+  const command = await commandOf(pid)
+  if (!commandOwnsAgentBrowser(command, profileDir)) {
+    return false
+  }
+  try {
+    kill(pid, 'SIGTERM')
+  } catch (error) {
+    const code = error instanceof Error && 'code' in error ? String(error.code) : ''
+    if (code !== 'ESRCH') {
+      return false
+    }
+  }
+  for (let attempt = 0; attempt < 20 && alive(pid); attempt += 1) {
+    await wait(100)
+  }
+  if (alive(pid)) {
+    try {
+      kill(pid, 'SIGKILL')
+    } catch {
+      return !alive(pid)
+    }
+  }
+  return true
+}
+
+function processCommand(pid: number): Promise<string> {
+  return new Promise((resolve) => {
+    const child = spawn('ps', ['-p', String(pid), '-o', 'command='], { shell: false })
+    let output = ''
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => {
+      output += chunk
+    })
+    child.on('error', () => resolve(''))
+    child.on('close', () => resolve(output))
+  })
+}
+
+export function firstSentences(text: string, count = 2): string {
+  const cleaned = text.replace(/\s+/g, ' ').trim()
+  if (!cleaned) {
+    return ''
+  }
+  const parts = cleaned.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) ?? [cleaned]
+  return parts
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .slice(0, count)
+    .join(' ')
+    .slice(0, 500)
+}
+
+export function pageObservationSummary(title: string, text: string): string {
+  const lead = title ? `I am looking at ${title}.` : 'I am looking at Agent Browser.'
+  const sentences = firstSentences(text)
+  const excerpt = (sentences || text).replace(/\s+/g, ' ').trim().slice(0, 500)
+  return excerpt ? `${lead} First sentences: ${excerpt}` : lead
+}
+
+export async function pageTextWithOcr(
+  body: string,
+  url: string,
+  readPageText: ((signal?: AbortSignal) => Promise<string>) | undefined,
+  signal?: AbortSignal
+): Promise<string> {
+  const trimmed = body.trim()
+  const thin = trimmed.length < 400
+  const maps = /\/maps(?:\/|$|\?)/i.test(url)
+  if ((!thin && !maps) || !readPageText || signal?.aborted) {
+    return body
+  }
+  const extra = (await readPageText(signal).catch(() => '')).trim()
+  if (!extra || trimmed.includes(extra.slice(0, 80))) {
+    return body
+  }
+  return `${trimmed}\n${extra}`.slice(0, 2_000)
 }
 
 export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): BrowserAutomationPort {
@@ -187,7 +342,9 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
 
   async function currentObservation(
     includeImage: boolean,
-    consent: boolean
+    consent: boolean,
+    signal?: AbortSignal,
+    within?: BrowserWithin
   ): Promise<BrowserOutcome> {
     const current = page
     if (!current) {
@@ -202,11 +359,9 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
         errorCode: 'blocked_url'
       }
     }
-    const read = await readTargets(current)
-    const body = await current
-      .locator('body')
-      .innerText()
-      .catch(() => '')
+    const read = await readTargets(current, within)
+    const domText = await readablePageText(current)
+    const body = await pageTextWithOcr(domText, url, options.readPageText, signal)
     const marked = (await current.locator('[data-companion-agent="browser"]').count()) > 0
     const observation: BrowserObservation = {
       snapshotId: randomUUID(),
@@ -229,9 +384,7 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
     snapshots.set(observation.snapshotId, { at: now(), targets: observation.targets })
     return {
       status: 'success_verified',
-      summary: observation.title
-        ? `I am looking at ${observation.title}.`
-        : 'I am looking at Agent Browser.',
+      summary: pageObservationSummary(observation.title, observation.untrustedText),
       observation
     }
   }
@@ -239,13 +392,135 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
   async function resolveTarget(
     input: BrowserElementInput,
     signal?: AbortSignal
-  ): Promise<{ page: Page; target: BrowserTarget } | BrowserOutcome> {
+  ): Promise<{ page: Page; target: BrowserTarget; locator: Locator } | BrowserOutcome> {
     const current = requirePage(signal)
     if (!('goto' in current)) {
       return current
     }
+    const selected = selectObservedTarget(input)
+    if ('target' in selected) {
+      let wanted = selected.target
+      const stored = snapshots.get(input.snapshotId)
+      if (!stored || now() - stored.at > ttl) {
+        const rematched = await rematchTarget(wanted, signal)
+        if ('target' in rematched) {
+          wanted = rematched.target
+        } else {
+          const named = await resolveByNameRole(input, signal)
+          if (named) {
+            return named
+          }
+          return rematched
+        }
+      }
+      const live = await resolveLive(current, wanted)
+      if ('target' in live) {
+        return live
+      }
+      const named = await resolveByNameRole(input, signal)
+      return named ?? live
+    }
+    const named = await resolveByNameRole(input, signal)
+    return named ?? selected
+  }
+
+  async function rematchTarget(
+    wanted: BrowserTarget,
+    signal?: AbortSignal
+  ): Promise<{ target: BrowserTarget } | BrowserOutcome> {
+    const refreshed = await currentObservation(false, false, signal)
+    if (refreshed.status !== 'success_verified' || !refreshed.observation) {
+      return {
+        status: 'failed',
+        summary: 'That screen reading expired. I need to look again.',
+        errorCode: 'stale_snapshot'
+      }
+    }
+    const stored = snapshots.get(refreshed.observation.snapshotId)
+    if (!stored) {
+      return {
+        status: 'failed',
+        summary: 'That screen reading expired. I need to look again.',
+        errorCode: 'stale_snapshot'
+      }
+    }
+    const matches = targetsMatchingIdentity(stored.targets, targetIdentityKey(wanted))
+    if (matches.length === 1) {
+      return { target: matches[0]! }
+    }
+    const byName = preferUniqueTarget(
+      stored.targets.filter(
+        (item) => item.role === wanted.role && item.name === wanted.name && !item.sensitive
+      ),
+      wanted
+    )
+    if (byName) {
+      return { target: byName }
+    }
+    return {
+      status: 'failed',
+      summary: 'That control changed. I need to look again.',
+      errorCode: 'stale_snapshot'
+    }
+  }
+
+  async function resolveByNameRole(
+    input: BrowserElementInput,
+    signal?: AbortSignal
+  ): Promise<{ page: Page; target: BrowserTarget; locator: Locator } | null> {
+    const current = requirePage(signal)
+    if (!('goto' in current)) {
+      return null
+    }
+    const role = browserRoles.find((item) => item === input.role)
+    const name = typeof input.name === 'string' ? input.name.trim() : ''
+    if (!role || !name) {
+      return null
+    }
+    const refreshed = await currentObservation(false, false, signal)
+    const pool = refreshed.observation?.targets ?? []
+    const matches = preferUniqueTarget(
+      pool.filter(
+        (item) => item.role === role && item.name === name && !item.sensitive && item.enabled
+      ),
+      { ancestors: Array.isArray(input.ancestors) ? input.ancestors : [] }
+    )
+    if (!matches) {
+      return null
+    }
+    const live = await resolveLive(current, matches)
+    return 'target' in live ? live : null
+  }
+
+  function selectObservedTarget(
+    input: BrowserElementInput
+  ): { target: BrowserTarget } | BrowserOutcome {
     const stored = snapshots.get(input.snapshotId)
-    if (!stored || now() - stored.at > ttl) {
+    if (input.query) {
+      const pool = stored?.targets ?? []
+      const resolved = resolveTargetQuery(pool, input.query)
+      if (!resolved.ok) {
+        return {
+          status: resolved.reason === 'unsupported' ? 'failed' : 'ambiguous_target',
+          summary:
+            resolved.reason === 'unsupported'
+              ? 'Use a list item index inside within, not a global ordinal.'
+              : resolved.reason === 'missing'
+                ? "I couldn't find that one control."
+                : 'More than one control matches that description.',
+          errorCode: resolved.reason
+        }
+      }
+      return { target: resolved.target }
+    }
+    if (!input.targetId) {
+      return {
+        status: 'failed',
+        summary: 'I need one control from the current page reading.',
+        errorCode: 'missing_target'
+      }
+    }
+    if (!stored) {
       return {
         status: 'failed',
         summary: 'That screen reading expired. I need to look again.',
@@ -260,6 +535,13 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
         errorCode: 'missing_target'
       }
     }
+    return { target }
+  }
+
+  async function resolveLive(
+    current: Page,
+    target: BrowserTarget
+  ): Promise<{ page: Page; target: BrowserTarget; locator: Locator } | BrowserOutcome> {
     if (target.sensitive || isSensitiveBrowserField({ name: target.name, role: target.role })) {
       return {
         status: 'blocked_sensitive',
@@ -269,43 +551,59 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
     }
     const matches = current.getByRole(target.role, { name: target.name, exact: true })
     const count = await matches.count()
-    if (count !== 1) {
-      return {
-        status: 'ambiguous_target',
-        summary:
-          count === 0
-            ? 'That control is no longer on the page.'
-            : 'More than one control has that name, so I did not press one.',
-        errorCode: count === 0 ? 'missing_target' : 'ambiguous'
+    const identity = targetIdentityKey(target)
+    const survivors: Array<{ locator: Locator; live: BrowserTarget }> = []
+    for (let index = 0; index < count; index += 1) {
+      const locator = matches.nth(index)
+      if (!(await locator.isVisible().catch(() => false))) {
+        continue
       }
-    }
-    const locator = matches.first()
-    const live = await readControl(locator)
-    if (
-      isSensitiveBrowserField({
-        name: `${target.name} ${live.fieldName}`,
-        role: target.role,
-        inputType: live.inputType,
-        autocomplete: live.autocomplete
-      })
-    ) {
-      return {
-        status: 'blocked_sensitive',
-        summary: "I can't type into or press a password or security code.",
-        errorCode: 'sensitive'
+      const live = await describeTarget(locator, target.role)
+      if (targetIdentityKey(live) !== identity) {
+        continue
       }
+      if (
+        live.sensitive ||
+        isSensitiveBrowserField({
+          name: `${live.name} ${live.fieldName}`,
+          role: target.role,
+          inputType: live.inputType,
+          autocomplete: live.autocomplete
+        })
+      ) {
+        return {
+          status: 'blocked_sensitive',
+          summary: "I can't type into or press a password or security code.",
+          errorCode: 'sensitive'
+        }
+      }
+      if (!live.enabled) {
+        return {
+          status: 'failed',
+          summary: 'That control is not available.',
+          errorCode: 'disabled'
+        }
+      }
+      survivors.push({ locator, live })
     }
-    if (!live.enabled) {
+    if (survivors.length === 0) {
       return {
         status: 'failed',
-        summary: 'That control is not available.',
-        errorCode: 'disabled'
+        summary: 'That control changed. I need to look again.',
+        errorCode: 'stale_snapshot'
       }
     }
-    return { page: current, target }
+    if (survivors.length > 1) {
+      return {
+        status: 'ambiguous_target',
+        summary: 'More than one control has that name, so I did not press one.',
+        errorCode: 'ambiguous'
+      }
+    }
+    return { page: current, target: survivors[0]!.live, locator: survivors[0]!.locator }
   }
 
-  return {
+  const port: BrowserAutomationPort = {
     isOpen() {
       return context !== null && page !== null
     },
@@ -361,18 +659,36 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
           errorCode: 'external_browser'
         }
       }
-      let launched: BrowserContext
-      try {
-        launched = await playwright.chromium.launchPersistentContext(options.profileDir, {
+      const startContext = (): Promise<BrowserContext> =>
+        playwright.chromium.launchPersistentContext(options.profileDir, {
           ...agentBrowserLaunchOptions(headed),
           executablePath,
           env: browserProcessEnv()
         })
-      } catch {
-        return {
-          status: 'failed',
-          summary: "I couldn't open Agent Browser.",
-          errorCode: 'launch_failed'
+      let launched: BrowserContext
+      try {
+        launched = await startContext()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : ''
+        const busy = agentBrowserProfileBusy(message)
+        const released = busy ? await releaseLockedAgentBrowser(options.profileDir) : false
+        if (!released) {
+          return {
+            status: 'failed',
+            summary: busy
+              ? 'Agent Browser is still open from another Companion window.'
+              : "I couldn't open Agent Browser.",
+            errorCode: 'launch_failed'
+          }
+        }
+        try {
+          launched = await startContext()
+        } catch {
+          return {
+            status: 'failed',
+            summary: "I couldn't open Agent Browser after closing the previous one.",
+            errorCode: 'launch_failed'
+          }
         }
       }
       if (call?.signal?.aborted) {
@@ -434,6 +750,12 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
     },
 
     async open(input, call) {
+      if (!page || !context) {
+        const started = await port.launch({}, call)
+        if (started.status !== 'success_verified') {
+          return started
+        }
+      }
       const current = requirePage(call?.signal)
       if (!('goto' in current)) {
         return current
@@ -469,15 +791,29 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
         await page?.goto('about:blank').catch(() => undefined)
         return { status: 'failed', summary: after.reason, errorCode: 'blocked_url' }
       }
-      return currentObservation(false, false)
+      if (page && !call?.signal?.aborted) {
+        await page
+          .waitForFunction(
+            () => ((document.body && document.body.innerText) || '').trim().length > 120,
+            undefined,
+            { timeout: 8_000 }
+          )
+          .catch(() => undefined)
+      }
+      return currentObservation(false, false, call?.signal)
     },
 
-    async observe(input, call) {
+    async observe(input: BrowserObserveInput, call) {
       const current = requirePage(call?.signal)
       if (!('goto' in current)) {
         return current
       }
-      return currentObservation(input.includeImage === true, input.consent === true)
+      return currentObservation(
+        input.includeImage === true,
+        input.consent === true,
+        call?.signal,
+        input.within
+      )
     },
 
     async click(input, call) {
@@ -487,12 +823,8 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
       }
       const beforeUrl = resolved.page.url()
       const beforeText = await pageText(resolved.page)
-      const matches = resolved.page.getByRole(resolved.target.role, {
-        name: resolved.target.name,
-        exact: true
-      })
       try {
-        const pressed = await withSignal(call?.signal, matches.click({ timeout: 5_000 }))
+        const pressed = await withSignal(call?.signal, resolved.locator.click({ timeout: 5_000 }))
         if (isOutcome(pressed)) {
           return pressed
         }
@@ -506,15 +838,35 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
           errorCode: lastBlock ? 'blocked_url' : 'click_failed'
         }
       }
-      const afterUrl = resolved.page.url()
-      const afterText = await pageText(resolved.page)
-      if (beforeUrl === afterUrl && beforeText === afterText) {
+      const after = await waitForActionEffect(resolved.page, {
+        beforeUrl,
+        beforeText,
+        expectUrlIncludes: input.expectUrlIncludes,
+        expectTextIncludes: input.expectTextIncludes
+      })
+      if (after.verified) {
         return {
-          status: 'changed_but_unverified',
-          summary: 'I pressed it, but the page did not show a change.'
+          status: 'success_verified',
+          summary: `I pressed ${resolved.target.name}.`
         }
       }
-      return { status: 'success_verified', summary: `I pressed ${resolved.target.name}.` }
+      if (after.alreadyTrue) {
+        return {
+          status: 'changed_but_unverified',
+          summary: `I pressed ${resolved.target.name}. The text you expected was already on the page before the click, so it cannot confirm anything. Pick evidence that appears only after the action.`,
+          errorCode: 'expectation_already_true'
+        }
+      }
+      if (after.changed) {
+        return {
+          status: 'changed_but_unverified',
+          summary: 'I pressed it, but I could not confirm the expected result.'
+        }
+      }
+      return {
+        status: 'changed_but_unverified',
+        summary: 'I pressed it, but the page did not show a change.'
+      }
     },
 
     async fill(input, call) {
@@ -529,16 +881,22 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
       if (!('target' in resolved)) {
         return resolved
       }
-      const matches = resolved.page.getByRole(resolved.target.role, {
-        name: resolved.target.name,
-        exact: true
-      })
+      if (resolved.target.role === 'checkbox' || resolved.target.role === 'radio') {
+        return {
+          status: 'failed',
+          summary: 'Use browser.click to change a checkbox or radio.',
+          errorCode: 'use_click'
+        }
+      }
       try {
-        const typed = await withSignal(call?.signal, matches.fill(input.text, { timeout: 5_000 }))
+        const typed = await withSignal(
+          call?.signal,
+          resolved.locator.fill(input.text, { timeout: 5_000 })
+        )
         if (isOutcome(typed)) {
           return typed
         }
-        const value = await matches.inputValue()
+        const value = await resolved.locator.inputValue()
         if (value !== input.text) {
           return {
             status: 'changed_but_unverified',
@@ -555,9 +913,12 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
           errorCode: 'fill_failed'
         }
       }
+      // A text field's value never shows up in page.innerText, so without echoing it
+      // here, a goal check that asks whether the typed text landed has no evidence to
+      // read — it would wait forever on a fill that already succeeded.
       return {
         status: 'success_verified',
-        summary: `I typed into ${resolved.target.name}. I did not submit the form.`
+        summary: `I typed "${redactSecretText(input.text).slice(0, 120)}" into ${resolved.target.name}. I did not submit the form.`
       }
     },
 
@@ -640,7 +1001,7 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
       if (current.url() === before) {
         return { status: 'no_change', summary: 'There is no previous page.' }
       }
-      return currentObservation(false, false)
+      return currentObservation(false, false, call?.signal)
     },
 
     async listTabs(call) {
@@ -705,6 +1066,7 @@ export function createPlaywrightAdapter(options: PlaywrightAdapterOptions): Brow
       return { status: 'success_verified', summary: 'I closed Agent Browser.' }
     }
   }
+  return port
 }
 
 async function allowRoute(
@@ -763,56 +1125,290 @@ function isOutcome(value: unknown): value is BrowserOutcome {
 }
 
 async function readTargets(
-  current: Page
+  current: Page,
+  within?: BrowserWithin
 ): Promise<{ targets: BrowserTarget[]; truncated: boolean }> {
-  const targets: BrowserTarget[] = []
-  let truncated = false
-  for (const role of browserRoles) {
-    const group = current.getByRole(role)
-    const count = await group.count()
-    for (let index = 0; index < count; index += 1) {
-      if (targets.length >= 40) {
-        truncated = true
-        break
+  const roles: string[] = [...browserRoles]
+  const raw = await current
+    .evaluate((wantedRoles: string[]) => {
+      const landmark = new Set([
+        'dialog',
+        'alertdialog',
+        'main',
+        'navigation',
+        'complementary',
+        'form',
+        'region',
+        'list',
+        'listitem',
+        'article',
+        'group'
+      ])
+      const implicitRole = (node: Element): string => {
+        const tag = node.tagName.toLowerCase()
+        if (tag === 'main') return 'main'
+        if (tag === 'nav') return 'navigation'
+        if (tag === 'aside') return 'complementary'
+        if (tag === 'form') return 'form'
+        if (tag === 'article') return 'article'
+        if (tag === 'dialog') return 'dialog'
+        if (tag === 'ul' || tag === 'ol') return 'list'
+        if (tag === 'li') return 'listitem'
+        if (tag === 'button') return 'button'
+        if (tag === 'a' && node.hasAttribute('href')) return 'link'
+        if (tag === 'textarea') return 'textbox'
+        if (tag === 'select') return 'combobox'
+        if (tag === 'input') {
+          const type = ((node as HTMLInputElement).type || 'text').toLowerCase()
+          if (type === 'checkbox') return 'checkbox'
+          if (type === 'radio') return 'radio'
+          if (type === 'search') return 'searchbox'
+          if (['button', 'submit', 'reset'].includes(type)) return 'button'
+          return 'textbox'
+        }
+        return (node.getAttribute('role') || '').toLowerCase()
       }
-      const locator = group.nth(index)
-      if (!(await locator.isVisible().catch(() => false))) {
-        continue
+      const explicitName = (node: HTMLElement): string => {
+        const labelledBy = node.getAttribute('aria-labelledby')
+        if (labelledBy) {
+          const parts = labelledBy
+            .split(/\s+/)
+            .map((id) => node.ownerDocument.getElementById(id)?.textContent ?? '')
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+          if (parts) return parts.slice(0, 120)
+        }
+        return (node.getAttribute('aria-label') ?? '').replace(/\s+/g, ' ').trim().slice(0, 120)
       }
-      const live = await readControl(locator)
-      if (!live.name) {
-        continue
+      const controlName = (node: HTMLElement): string => {
+        const named = explicitName(node)
+        if (named) return named
+        const id = node.getAttribute('id')
+        if (id) {
+          const owner = node.ownerDocument.querySelector(`label[for="${CSS.escape(id)}"]`)
+          const label = (owner?.textContent ?? '').replace(/\s+/g, ' ').trim()
+          if (label) return label.slice(0, 120)
+        }
+        const text = (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim()
+        return (text || node.getAttribute('name') || '').slice(0, 120)
       }
-      targets.push({
-        id: `t${targets.length + 1}`,
-        role,
-        name: live.name.slice(0, 120),
-        enabled: live.enabled,
-        sensitive: isSensitiveBrowserField({
-          name: `${live.name} ${live.fieldName}`,
+      const ancestorsOf = (
+        node: HTMLElement
+      ): { ancestors: Array<{ role: string; name?: string }>; inListIndex?: number } => {
+        const ancestors: Array<{ role: string; name?: string }> = []
+        let listIndex: number | undefined
+        let cursor: HTMLElement | null = node.parentElement
+        while (cursor && ancestors.length < 4) {
+          const roleName = (cursor.getAttribute('role') || implicitRole(cursor)).toLowerCase()
+          if (landmark.has(roleName)) {
+            let name = explicitName(cursor)
+            if (!name && roleName === 'listitem') {
+              name = (cursor.innerText || cursor.textContent || '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 120)
+            }
+            ancestors.unshift({ role: roleName, ...(name ? { name } : {}) })
+            if (roleName === 'listitem' && listIndex === undefined) {
+              let index = 1
+              let sibling = cursor.previousElementSibling
+              while (sibling) {
+                const siblingRole = (
+                  sibling.getAttribute('role') || implicitRole(sibling)
+                ).toLowerCase()
+                if (siblingRole === 'listitem') index += 1
+                sibling = sibling.previousElementSibling
+              }
+              listIndex = index
+            }
+          }
+          cursor = cursor.parentElement
+        }
+        return { ancestors, inListIndex: listIndex }
+      }
+      const isVisible = (node: HTMLElement): boolean => {
+        const style = window.getComputedStyle(node)
+        if (style.display === 'none' || style.visibility === 'hidden') return false
+        const rect = node.getBoundingClientRect()
+        return rect.width > 0 && rect.height > 0
+      }
+      const collected: Array<{
+        role: string
+        name: string
+        enabled: boolean
+        inputType: string
+        autocomplete: string
+        fieldName: string
+        ancestors: Array<{ role: string; name?: string }>
+        inListIndex?: number
+      }> = []
+      const all = Array.from(document.querySelectorAll('body *')) as HTMLElement[]
+      for (const node of all) {
+        const role = implicitRole(node)
+        if (!wantedRoles.includes(role)) continue
+        if (!isVisible(node)) continue
+        const name = controlName(node)
+        if (!name) continue
+        const context = ancestorsOf(node)
+        collected.push({
           role,
-          inputType: live.inputType,
-          autocomplete: live.autocomplete
+          name,
+          enabled:
+            !(node as HTMLButtonElement).disabled && node.getAttribute('aria-disabled') !== 'true',
+          inputType: node.getAttribute('type') ?? '',
+          autocomplete: node.getAttribute('autocomplete') ?? '',
+          fieldName: node.getAttribute('name') ?? '',
+          ancestors: context.ancestors,
+          inListIndex: context.inListIndex
         })
-      })
+      }
+      return collected
+    }, roles)
+    .catch(() => [])
+
+  const collected: BrowserTarget[] = []
+  for (const [index, item] of raw.entries()) {
+    const role = browserRoles.find((entry) => entry === item.role)
+    if (!role) {
+      continue
     }
-    if (truncated) {
-      break
-    }
+    collected.push({
+      id: `t${index + 1}`,
+      role,
+      name: item.name.slice(0, 120),
+      enabled: item.enabled,
+      sensitive: isSensitiveBrowserField({
+        name: `${item.name} ${item.fieldName}`,
+        role,
+        inputType: item.inputType,
+        autocomplete: item.autocomplete
+      }),
+      ancestors: item.ancestors,
+      inListIndex: item.inListIndex
+    })
   }
-  return { targets, truncated }
+  const scoped = within ? collected.filter((item) => targetInWithin(item, within)) : collected
+  const capped = preferTargets(scoped, within ? browserScopedTargetCap : browserTargetSoftCap)
+  return {
+    targets: assignObservationIds(capped.targets),
+    truncated: capped.truncated
+  }
 }
 
-async function readControl(locator: Locator): Promise<{
-  name: string
-  enabled: boolean
-  inputType: string
-  autocomplete: string
-  fieldName: string
-}> {
+function targetInWithin(target: BrowserTarget, within: BrowserWithin): boolean {
+  const ancestor = target.ancestors.find((entry) => {
+    if (entry.role !== within.role) {
+      return false
+    }
+    if (within.name !== undefined && entry.name !== within.name) {
+      return false
+    }
+    if (
+      within.nameIncludes &&
+      !(entry.name ?? '').toLowerCase().includes(within.nameIncludes.toLowerCase())
+    ) {
+      return false
+    }
+    return true
+  })
+  if (!ancestor) {
+    return false
+  }
+  if (within.itemOrdinal === undefined) {
+    return true
+  }
+  return target.inListIndex === within.itemOrdinal
+}
+
+async function describeTarget(
+  locator: Locator,
+  role: BrowserTarget['role']
+): Promise<
+  BrowserTarget & {
+    inputType: string
+    autocomplete: string
+    fieldName: string
+  }
+> {
   const enabled = await locator.isEnabled().catch(() => false)
-  const facts = await locator.evaluate((element) => {
+  const facts = await locator.evaluate((element, expectedRole) => {
+    const landmark = new Set([
+      'dialog',
+      'alertdialog',
+      'main',
+      'navigation',
+      'complementary',
+      'form',
+      'region',
+      'list',
+      'listitem',
+      'article',
+      'group'
+    ])
+    const implicitRole = (node: Element): string => {
+      const tag = node.tagName.toLowerCase()
+      if (tag === 'main') return 'main'
+      if (tag === 'nav') return 'navigation'
+      if (tag === 'aside') return 'complementary'
+      if (tag === 'form') return 'form'
+      if (tag === 'article') return 'article'
+      if (tag === 'dialog') return 'dialog'
+      if (tag === 'ul' || tag === 'ol') return 'list'
+      if (tag === 'li') return 'listitem'
+      return ''
+    }
+    const explicitName = (node: HTMLElement): string => {
+      const labelledBy = node.getAttribute('aria-labelledby')
+      if (labelledBy) {
+        const parts = labelledBy
+          .split(/\s+/)
+          .map((id) => node.ownerDocument.getElementById(id)?.textContent ?? '')
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+        if (parts) {
+          return parts.slice(0, 120)
+        }
+      }
+      const aria = (node.getAttribute('aria-label') ?? '').replace(/\s+/g, ' ').trim()
+      if (aria) {
+        return aria.slice(0, 120)
+      }
+      return ''
+    }
     const node = element as HTMLElement
+    const ancestors: Array<{ role: string; name?: string }> = []
+    let listIndex: number | undefined
+    let cursor: HTMLElement | null = node.parentElement
+    while (cursor && ancestors.length < 4) {
+      const roleName = (cursor.getAttribute('role') || implicitRole(cursor)).toLowerCase()
+      if (landmark.has(roleName)) {
+        let name = explicitName(cursor)
+        if (!name && roleName === 'listitem') {
+          name = (cursor.innerText || cursor.textContent || '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 120)
+        }
+        ancestors.unshift({ role: roleName, ...(name ? { name } : {}) })
+        if (roleName === 'listitem' && listIndex === undefined) {
+          let index = 1
+          let sibling = cursor.previousElementSibling
+          while (sibling) {
+            const siblingRole = (
+              sibling.getAttribute('role') || implicitRole(sibling)
+            ).toLowerCase()
+            if (siblingRole === 'listitem') {
+              index += 1
+            }
+            sibling = sibling.previousElementSibling
+          }
+          listIndex = index
+        }
+      }
+      cursor = cursor.parentElement
+    }
     const id = node.getAttribute('id')
     let label = node.getAttribute('aria-label') ?? ''
     if (!label && id) {
@@ -822,20 +1418,128 @@ async function readControl(locator: Locator): Promise<{
     if (!label) {
       label = node.innerText || node.textContent || ''
     }
+    const name = label.replace(/\s+/g, ' ').trim()
+    const fieldName = node.getAttribute('name') ?? ''
+    const inputType = node.getAttribute('type') ?? ''
+    const autocomplete = node.getAttribute('autocomplete') ?? ''
     return {
-      name: label.replace(/\s+/g, ' ').trim(),
-      inputType: node.getAttribute('type') ?? '',
-      autocomplete: node.getAttribute('autocomplete') ?? '',
-      fieldName: node.getAttribute('name') ?? ''
+      role: expectedRole,
+      name: name || fieldName,
+      ancestors,
+      inListIndex: listIndex,
+      inputType,
+      autocomplete,
+      fieldName
     }
+  }, role)
+  const sensitive = isSensitiveBrowserField({
+    name: `${facts.name} ${facts.fieldName}`,
+    role,
+    inputType: facts.inputType,
+    autocomplete: facts.autocomplete
   })
-  return { ...facts, name: facts.name || facts.fieldName, enabled }
+  return {
+    id: 'live',
+    role,
+    name: facts.name.slice(0, 120),
+    enabled,
+    sensitive,
+    ancestors: facts.ancestors,
+    inListIndex: facts.inListIndex,
+    inputType: facts.inputType,
+    autocomplete: facts.autocomplete,
+    fieldName: facts.fieldName
+  }
+}
+
+async function waitForActionEffect(
+  current: Page,
+  input: {
+    beforeUrl: string
+    beforeText: string
+    expectUrlIncludes?: string
+    expectTextIncludes?: string
+  }
+): Promise<{ verified: boolean; changed: boolean; alreadyTrue: boolean }> {
+  const textNeedle = input.expectTextIncludes?.trim()
+  const urlNeedle = input.expectUrlIncludes?.trim()
+  // Evidence that was already on the screen before the action can never become newly
+  // true, so trusting it would permanently mark a real, working click unverified. Fall
+  // back to the same generic "did anything change" check used when no expectation was
+  // given at all, instead of giving up on this action.
+  const alreadyTrue = Boolean(
+    (textNeedle && input.beforeText.toLowerCase().includes(textNeedle.toLowerCase())) ||
+    (urlNeedle && input.beforeUrl.toLowerCase().includes(urlNeedle.toLowerCase()))
+  )
+  const hasExpectation = Boolean((textNeedle || urlNeedle) && !alreadyTrue)
+  let afterUrl = current.url()
+  let afterText = await pageText(current)
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    afterUrl = current.url()
+    afterText = await pageText(current)
+    if (hasExpectation) {
+      if (
+        actionExpectationMet({
+          beforeText: input.beforeText,
+          afterText,
+          beforeUrl: input.beforeUrl,
+          afterUrl,
+          expectTextIncludes: input.expectTextIncludes,
+          expectUrlIncludes: input.expectUrlIncludes
+        })
+      ) {
+        return { verified: true, changed: true, alreadyTrue }
+      }
+    } else if (
+      meaningfulPageChange({
+        beforeText: input.beforeText,
+        afterText,
+        beforeUrl: input.beforeUrl,
+        afterUrl
+      })
+    ) {
+      return { verified: true, changed: true, alreadyTrue }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  const changed = meaningfulPageChange({
+    beforeText: input.beforeText,
+    afterText,
+    beforeUrl: input.beforeUrl,
+    afterUrl
+  })
+  if (hasExpectation) {
+    return { verified: false, changed, alreadyTrue }
+  }
+  return { verified: changed, changed, alreadyTrue }
 }
 
 async function pageText(current: Page): Promise<string> {
+  return readablePageText(current)
+}
+
+async function readablePageText(current: Page): Promise<string> {
   return current
-    .locator('body')
-    .innerText()
+    .evaluate(() => {
+      const paragraphs = Array.from(
+        document.querySelectorAll('#mw-content-text .mw-parser-output > p')
+      )
+        .map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim())
+        .filter((line) => line.length > 40)
+        .slice(0, 4)
+        .join(' ')
+      if (paragraphs.length > 40) {
+        return paragraphs.slice(0, 2_000)
+      }
+      const main = document.querySelector(
+        'main, article, #content, #mw-content-text, [role="main"]'
+      )
+      const mainText = ((main as HTMLElement | null)?.innerText || '').trim()
+      if (mainText.length > 40) {
+        return mainText.slice(0, 2_000)
+      }
+      return (document.body?.innerText || '').slice(0, 2_000)
+    })
     .catch(() => '')
 }
 

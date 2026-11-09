@@ -33,22 +33,33 @@ export function targetIdentityFrom(input: Record<string, unknown>): TargetIdenti
 }
 
 export function sameTargetIdentity(approved: TargetIdentity, live: TargetIdentity): boolean {
-  if (!approved.name || !live.name) {
+  if (!approved.name && !live.name) {
+    // Browser approvals often key off snapshotId when the model omitted a name.
+    const sameObservation =
+      Boolean(approved.observationId) && approved.observationId === live.observationId
+    if (!sameObservation) {
+      if (!approved.windowId || !live.windowId || approved.windowId !== live.windowId) {
+        return false
+      }
+    }
+  } else if (!approved.name && live.name) {
+    // Bind on confirm: enrich missed the name, but live resolve found the control.
+  } else if (!approved.name || !live.name) {
+    return false
+  } else if (normalizeControlName(approved.name) !== normalizeControlName(live.name)) {
     return false
   }
-  if (normalizeControlName(approved.name) !== normalizeControlName(live.name)) {
-    return false
-  }
-  if (approved.role && approved.role !== live.role) {
+  if (approved.role && live.role && approved.role !== live.role) {
     return false
   }
   if (
     approved.appName &&
+    live.appName &&
     normalizeControlName(approved.appName) !== normalizeControlName(live.appName)
   ) {
     return false
   }
-  if (approved.windowId && approved.windowId !== live.windowId) {
+  if (approved.windowId && live.windowId && approved.windowId !== live.windowId) {
     return false
   }
   return true

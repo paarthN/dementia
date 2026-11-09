@@ -338,17 +338,11 @@ describe('reminders from chat', () => {
     expect(listed.summary).toContain('call the pharmacy')
   })
 
-  it('asks before saving an uncertain time', async () => {
+  it('saves an uncertain reminder without asking first', async () => {
     const { db, orchestrator } = setup()
-    const pending = await orchestrator.submit('Remind me to call Jim tomorrow at four')
-    expect(pending.responseState).toBe('needs_confirmation')
-    expect(pending.summary).toContain('4')
-    expect(listReminders(db)).toHaveLength(0)
-    const saved = await orchestrator.confirm(
-      pending.approval?.taskId ?? '',
-      pending.approval?.approvalId ?? ''
-    )
+    const saved = await orchestrator.submit('Remind me to call Jim tomorrow at four')
     expect(saved.responseState).toBe('success')
+    expect(saved.summary).toContain('4')
     expect(listReminders(db)[0]?.triggerAtUtc).toBe('2026-11-06T00:00:00.000Z')
   })
 

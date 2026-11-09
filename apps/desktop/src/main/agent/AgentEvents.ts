@@ -22,7 +22,10 @@ export async function readLiveTarget(
   }
 ): Promise<TargetIdentity | null> {
   if (!liveTools.has(approval.tool)) {
-    return approval.target.name ? approval.target : null
+    if (approval.target.name) {
+      return approval.target
+    }
+    return approval.target.windowId ? approval.target : null
   }
   try {
     if (approval.tool.startsWith('browser.')) {
@@ -31,12 +34,39 @@ export async function readLiveTarget(
       if (!observation) {
         return null
       }
+      let targetId = ''
+      try {
+        const payload = JSON.parse(approval.payloadJson) as Record<string, unknown>
+        targetId = typeof payload.targetId === 'string' ? payload.targetId : ''
+      } catch {
+        targetId = ''
+      }
+      const byId = observation.targets.find((item) => item.id === targetId)
+      if (
+        byId &&
+        (!approval.target.name ||
+          sameTargetIdentity(approval.target, {
+            name: byId.name,
+            role: byId.role,
+            appName: approval.target.appName || 'Agent Browser',
+            windowId: approval.target.windowId,
+            observationId: approval.target.observationId
+          }))
+      ) {
+        return {
+          name: byId.name,
+          role: byId.role,
+          appName: approval.target.appName || 'Agent Browser',
+          windowId: approval.target.windowId,
+          observationId: observation.snapshotId
+        }
+      }
       return oneMatch(
         approval.target,
         observation.targets.map((item) => ({
           name: item.name,
           role: item.role,
-          appName: approval.target.appName || 'Chromium',
+          appName: approval.target.appName || 'Agent Browser',
           windowId: approval.target.windowId,
           observationId: observation.snapshotId
         }))

@@ -125,6 +125,12 @@ function requestBody(turn: AgentTurn): Record<string, unknown> {
       body.lastToolResult = result.data
     }
   }
+  if (turn.goalChecks && turn.goalChecks.length > 0) {
+    body.goalChecks = turn.goalChecks.slice(0, 8).map((item) => ({
+      label: redactSecretText(item.label).slice(0, 160),
+      done: item.done === true
+    }))
+  }
   return body
 }
 

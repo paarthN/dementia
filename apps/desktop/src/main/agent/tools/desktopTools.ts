@@ -95,6 +95,23 @@ export function desktopToolDefinitions(): Array<{
       }
     },
     {
+      name: 'desktop.clickPoint',
+      risk: 'R2',
+      async execute(input, context) {
+        return run(context, (desktop) =>
+          desktop.clickPoint(
+            {
+              snapshotId: typeof input.snapshotId === 'string' ? input.snapshotId : '',
+              windowId: typeof input.windowId === 'string' ? input.windowId : '',
+              x: typeof input.x === 'number' ? input.x : Number.NaN,
+              y: typeof input.y === 'number' ? input.y : Number.NaN
+            },
+            { signal: context.signal }
+          )
+        )
+      }
+    },
+    {
       name: 'desktop.keyPress',
       risk: 'R2',
       async execute(input, context) {

@@ -80,11 +80,17 @@ export function chatSubmitEffect(input: {
 }
 
 export function describeToolAction(tool: string, args: Record<string, unknown>): string {
+  if (tool === 'task.setGoalChecks') {
+    return 'Writing the checks for this request.'
+  }
   if (tool === 'apps.open') {
     return `Opening ${field(args.displayName, 'the app')}.`
   }
   if (tool === 'browser.open' || tool === 'browser.openUrl') {
     return 'Opening the page.'
+  }
+  if (tool === 'desktop.clickPoint') {
+    return 'Clicking one spot in the window.'
   }
   if (typing(tool, args)) {
     return `Typing into ${field(args.name, 'the field')}.`
@@ -106,11 +112,22 @@ export function completedToolAction(tool: string, args: Record<string, unknown>)
   if (current.startsWith('Pressing ')) {
     return current.replace('Pressing ', 'Pressed ')
   }
+  if (current.startsWith('Clicking ')) {
+    return current.replace('Clicking ', 'Clicked ')
+  }
   return 'Finished that step.'
 }
 
+export const taskScopeTool = 'task.scope'
+
 export function confirmLabelFor(tool: string, args: Record<string, unknown>): string {
   const name = field(args.name, '')
+  if (tool === taskScopeTool) {
+    return clip(`Allow in ${field(args.appName, 'this app')}`)
+  }
+  if (tool === 'desktop.clickPoint') {
+    return 'Click that spot'
+  }
   if (typing(tool, args) && name) {
     return clip(`Type into ${name}`)
   }
@@ -125,8 +142,18 @@ export function confirmLabelFor(tool: string, args: Record<string, unknown>): st
 
 export function approvalWhat(tool: string, args: Record<string, unknown>): string {
   const name = field(args.name, 'that control')
+  if (tool === taskScopeTool) {
+    const where = field(args.appName, 'this app')
+    return `Let me click and type in ${where} to finish this. I will still ask before anything that sends, buys, deletes, uploads, or pays, and I will not type a password.`.slice(
+      0,
+      240
+    )
+  }
   const app = field(args.appName, '')
   const where = app ? `${name} in ${app}` : name
+  if (tool === 'desktop.clickPoint') {
+    return 'Click one spot in the window.'
+  }
   if (typing(tool, args)) {
     return `Type into ${where}.`
   }

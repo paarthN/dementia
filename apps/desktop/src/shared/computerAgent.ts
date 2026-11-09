@@ -27,6 +27,8 @@ export const computerAgentEvents = [
   'executed',
   'verified_continue',
   'verified_done',
+  'keep_going',
+  'force_action',
   'pause',
   'resume',
   'stop',
@@ -57,12 +59,21 @@ export const actionOutcomeSchema = z.enum(actionOutcomes)
 
 export const maxModelImageChars = 180_000
 
+export const modelAncestorSchema = z
+  .object({
+    role: z.string().min(1).max(80),
+    name: z.string().max(120).optional()
+  })
+  .strict()
+
 export const modelTargetSchema = z
   .object({
     id: z.string().min(1).max(80),
     role: z.string().min(1).max(80),
     name: z.string().max(120),
-    enabled: z.boolean()
+    enabled: z.boolean(),
+    ancestors: z.array(modelAncestorSchema).max(4).optional(),
+    inListIndex: z.number().int().min(1).max(200).optional()
   })
   .strict()
 
@@ -72,8 +83,14 @@ export const safeObservationSchema = z
     appName: z.string().min(1).max(120),
     capturedAtUtc: z.string().min(1).max(40),
     windowTitle: z.string().max(200).optional(),
+    // Desktop tools require these to address a window. Without them the model is
+    // asked for fields it was never shown, and every desktop.* mutation fails.
+    windowId: z.string().max(80).optional(),
+    bundleId: z.string().max(200).optional(),
+    processId: z.number().int().nonnegative().optional(),
+    truncated: z.boolean().optional(),
     untrustedText: z.string().max(2_000).optional(),
-    targets: z.array(modelTargetSchema).max(40).optional(),
+    targets: z.array(modelTargetSchema).max(80).optional(),
     imageBase64: z.string().max(maxModelImageChars).optional()
   })
   .strict()
@@ -160,6 +177,7 @@ export interface AgentTurn {
   screenShare: boolean
   continuation?: { responseId: string; callId: string }
   lastToolResult?: SafeToolResult
+  goalChecks?: Array<{ label: string; done: boolean }>
 }
 
 export interface AgentRunResult {

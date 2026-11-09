@@ -270,6 +270,25 @@ describe('computer-use agent foundation', () => {
     const provider = new FakeAgentProvider([
       {
         type: 'tool_call',
+        tool: 'task.setGoalChecks',
+        args: {
+          checks: [
+            {
+              id: 'open',
+              label: 'TextEdit is open',
+              anyTools: ['apps.open']
+            },
+            {
+              id: 'note',
+              label: 'buy milk is typed',
+              anyTools: ['test.note'],
+              textIncludes: 'buy milk'
+            }
+          ]
+        }
+      },
+      {
+        type: 'tool_call',
         tool: 'apps.open',
         args: { displayName: 'TextEdit', bundleId: 'com.apple.TextEdit' }
       },
@@ -320,6 +339,10 @@ describe('computer-use agent foundation', () => {
       'verifying',
       'observing',
       'planning',
+      'executing',
+      'verifying',
+      'observing',
+      'planning',
       'completed'
     ])
     expect(outcome.progress.some((step) => step.summary.includes('screen.capture'))).toBe(false)
@@ -336,7 +359,7 @@ describe('computer-use agent foundation', () => {
     })
     expect(outcome.state).toBe('failed')
     expect(outcome.actionOutcome).toBe('changed_but_unverified')
-    expect(outcome.summary).toBe('I could not verify that the task was finished.')
+    expect(outcome.summary).toContain('I could not finish. Still needed:')
   })
 
   it('stops at the action budget and after repeated identical failures', async () => {

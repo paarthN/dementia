@@ -81,12 +81,15 @@ import {
   createAgentProviderClient,
   runConsentedAgent
 } from './agent/AgentProviderClient'
-import { observationForAgent } from './agent/AgentPrompt'
-import { createNativeMacAdapter } from './agent/ports/NativeMacAdapter'
+import {
+  browserObservationForAgent,
+  observationForAgent,
+  prepareModelObservation
+} from './agent/AgentPrompt'
+import { createPeekabooDesktop } from './agent/ports/PeekabooDesktopAdapter'
 import type { DesktopAutomationPort } from './agent/ports/DesktopAutomationPort'
 import type { BrowserAutomationPort } from './agent/ports/BrowserAutomationPort'
-import { createPlaywrightAdapter } from './agent/ports/PlaywrightAdapter'
-import { createObservationService, createObservingDesktopPort } from './agent/ObservationService'
+import { createPlaywrightAdapter, isAgentBrowserApp } from './agent/ports/PlaywrightAdapter'
 import { createRemoteAssistant } from './providers/assistant'
 import { createToolRegistry } from './services/toolRegistry'
 import type { AgentRunResult } from '../shared/computerAgent'
@@ -158,24 +161,18 @@ export class Desktop {
         height: display.bounds.height,
         scaleFactor: display.scaleFactor
       }))
-    const desktopControl = createNativeMacAdapter({ bridge: this.bridge })
+    const peekaboo = createPeekabooDesktop()
+    const desktopPort = peekaboo.port
     this.screenHelp = createScreenCoordinator({
       bridge: this.bridge,
       displays
     })
-    const observations = createObservationService({
-      desktop: desktopControl,
-      bridge: this.bridge,
-      screen: this.screenHelp,
-      displays,
-      onActivity: () => this.publish()
-    })
-    const desktopPort = createObservingDesktopPort(desktopControl, observations)
     this.desktopPort = desktopPort
     this.browserPort = createPlaywrightAdapter({
       profileDir: join(app.getPath('userData'), 'agent-browser'),
       headed: true,
-      browserExecutable: app.isPackaged ? resolveBundledBrowser(process.resourcesPath) : undefined
+      browserExecutable: app.isPackaged ? resolveBundledBrowser(process.resourcesPath) : undefined,
+      readPageText: (signal) => peekaboo.readVisibleText(signal)
     })
     this.screenHelp.setDeveloperInspection(
       loadPreferences(this.db).privacy.developerInspection === true
@@ -407,12 +404,38 @@ export class Desktop {
   private async observeForAgent(
     signal: AbortSignal
   ): Promise<ReturnType<typeof observationForAgent>> {
+    const sharing = this.screenShared()
     if (!this.desktopPort) {
       return null
     }
-    const sharing = this.screenShared()
     const seen = await this.desktopPort.observe({ includeImage: sharing }, { signal })
-    return seen.observation ? observationForAgent(seen.observation, sharing) : null
+    const front = seen.observation?.app.name ?? ''
+    // Read the page only when Agent Browser is actually in front, or when the desktop
+    // could not be read at all. The old allowlist of eight app names meant any other
+    // app — Chrome, Slack, Excel — was treated as "not a desktop app" and the loop
+    // observed the browser instead of the window the person was looking at.
+    const readBrowser = isAgentBrowserApp(front) || !seen.observation
+    if (this.browserPort?.isOpen() && readBrowser) {
+      const page = await this.browserPort.observe(
+        { includeImage: sharing, consent: sharing },
+        { signal }
+      )
+      if (page.observation && /^https?:/i.test(page.observation.url)) {
+        return browserObservationForAgent(page.observation, sharing)
+      }
+    }
+    if (!seen.observation) {
+      return prepareModelObservation(
+        {
+          snapshotId: 'screen-unread',
+          appName: 'Desktop',
+          capturedAtUtc: new Date().toISOString(),
+          untrustedText: seen.summary
+        },
+        false
+      )
+    }
+    return observationForAgent(seen.observation, sharing)
   }
 
   start(): void {

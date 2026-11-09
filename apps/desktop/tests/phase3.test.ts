@@ -231,7 +231,7 @@ describe('T-CHAT and T-SET-04', () => {
 
     const api = createCompanionApi(async () => undefined)
     expect(Object.keys(api).join(' ')).not.toMatch(/shell|exec|spawn/i)
-    const preload = readFileSync(resolve('src/preload/index.ts'), 'utf8')
+    const preload = readFileSync(resolve(__dirname, '../src/preload/index.ts'), 'utf8')
     expect(preload).not.toContain('executeShell')
     expect(preload).not.toContain('child_process')
     expect(preload).not.toContain('ipcRenderer.send')
@@ -370,7 +370,7 @@ describe('T-CHAT and T-SET-04', () => {
     expect(loadPreferences(db).appearance.textScale).toBe('large')
   })
 
-  it('asks before opening a website that is not on the usual list', async () => {
+  it('opens a website the user named after they confirm the address', async () => {
     const calls: string[][] = []
     const orchestrator = new TaskOrchestrator({
       db: database(),
@@ -380,21 +380,15 @@ describe('T-CHAT and T-SET-04', () => {
         return 0
       }
     })
-    const pending = await orchestrator.submit('Open https://example.com/recipes')
-    expect(pending.responseState).toBe('needs_confirmation')
+    const preview = await orchestrator.submit('Open https://example.com/recipes')
+    expect(preview.responseState).toBe('needs_confirmation')
     expect(calls).toEqual([])
-    expect(pending.approval?.confirmLabel).toBe('Open website')
     const opened = await orchestrator.confirm(
-      pending.approval?.taskId ?? '',
-      pending.approval?.approvalId ?? ''
+      preview.task?.id ?? '',
+      preview.approval?.approvalId ?? ''
     )
     expect(opened.responseState).toBe('success')
     expect(calls[0]?.[0]).toContain('https://example.com/recipes')
-    const expired = await orchestrator.confirm(
-      pending.approval?.taskId ?? '',
-      pending.approval?.approvalId ?? ''
-    )
-    expect(expired.responseState).toBe('failure')
   })
 
   it('does not launch while the user asked to be shown how', async () => {

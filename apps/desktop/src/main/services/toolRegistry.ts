@@ -14,6 +14,7 @@ import {
   type CommandRunner
 } from './launcher'
 import type { ReminderPort } from './reminderScheduler'
+import { parseGoalCriteria } from '../agent/GoalCriteria'
 import type { BrowserAutomationPort } from '../agent/ports/BrowserAutomationPort'
 import type { DesktopAutomationPort } from '../agent/ports/DesktopAutomationPort'
 import { browserToolDefinitions } from '../agent/tools/browserTools'
@@ -141,6 +142,13 @@ function coreTools(): ToolDefinition[] {
           summary: 'These are the apps I can open by name.',
           verification: { method: 'local_state', passed: true }
         }
+      }
+    },
+    {
+      name: 'task.setGoalChecks',
+      risk: 'R0',
+      async execute(input) {
+        return setGoalChecks(input)
       }
     },
     {
@@ -317,6 +325,28 @@ function missedApp(displayName: string): ToolResult {
   }
 }
 
+function setGoalChecks(input: Record<string, unknown>): ToolResult {
+  const checks = parseGoalCriteria(input)
+  if (!checks) {
+    return {
+      status: 'failed',
+      summary:
+        'I need checks like {"checks":[{"id":"typed","label":"Search shows oak","anyTools":["browser.fill"],"textIncludes":"oak"}]}.',
+      errorCode: 'invalid_goal_checks',
+      verification: { method: 'none', passed: false }
+    }
+  }
+  return {
+    status: 'succeeded',
+    summary:
+      checks.length === 1
+        ? `I will check: ${checks[0]?.label ?? 'the request'}.`
+        : `I will check ${checks.length} outcomes before I finish.`,
+    data: { checks },
+    verification: { method: 'local_state', passed: true }
+  }
+}
+
 async function openApp(input: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
   const provided = typeof input.displayName === 'string' ? input.displayName : ''
   const displayName = provided.trim() || 'That app'
@@ -363,6 +393,36 @@ async function searchWeb(
     }
   }
   const url = browserSearchUrl(query)
+  if (context.browser) {
+    const launched = await context.browser.launch({}, { signal: context.signal })
+    if (launched.status !== 'success_verified') {
+      return {
+        status: 'failed',
+        summary: launched.summary,
+        errorCode: launched.errorCode ?? 'browser_failed',
+        verification: { method: 'none', passed: false }
+      }
+    }
+    const opened = await context.browser.open({ url }, { signal: context.signal })
+    if (opened.status !== 'success_verified') {
+      return {
+        status: 'failed',
+        summary: opened.summary,
+        errorCode: opened.errorCode ?? 'browser_failed',
+        verification: { method: 'none', passed: false }
+      }
+    }
+    return {
+      status: 'succeeded',
+      summary: `I searched Agent Browser for ${query}. ${opened.summary}`.slice(0, 500),
+      data: {
+        url: opened.observation?.url ?? url,
+        snapshotId: opened.observation?.snapshotId,
+        actionOutcome: opened.status
+      },
+      verification: { method: 'local_state', passed: true, details: url }
+    }
+  }
   const opened = await launchWebsite(url, context.run)
   if (opened.status !== 'succeeded') {
     return {

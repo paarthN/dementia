@@ -7,10 +7,13 @@ export interface AgentBudget {
   maxIdenticalFailures: number
 }
 
+// Sized for a real multi-app task (open a page, read it, switch apps, type, verify),
+// not the 5-click fixture these started at. One approval per surface instead of one
+// per click removed the human round-trips that used to bound this.
 export const defaultAgentBudget: AgentBudget = {
-  maxActions: 20,
-  maxModelTurns: 30,
-  deadlineMs: 5 * 60_000,
+  maxActions: 40,
+  maxModelTurns: 60,
+  deadlineMs: 15 * 60_000,
   maxIdenticalFailures: 2
 }
 

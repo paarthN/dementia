@@ -126,10 +126,7 @@ describe('show and press a control', () => {
       now: new Date(),
       screenPermission: true
     })
-    expect(decision).toMatchObject({
-      effect: 'confirm',
-      reason: "I'll click Save in TextEdit."
-    })
+    expect(decision).toMatchObject({ effect: 'allow', risk: 'R2' })
   })
 
   it('places the card beside the control', () => {
@@ -142,7 +139,7 @@ describe('show and press a control', () => {
     expect(overlaps(edge, card, { x: 1200, y: 40, width: 180, height: 30 })).toBe(false)
   })
 
-  it('presses the re-found control only after confirmation', async () => {
+  it('presses the named control when asked', async () => {
     let pressed = false
     const invoked: Record<string, unknown>[] = []
     const bridge: OsBridge = {
@@ -172,14 +169,7 @@ describe('show and press a control', () => {
       screenPermission: () => true,
       screen
     })
-    const preview = await orchestrator.submit('Click Save', { mode: 'guide' })
-    expect(preview.responseState).toBe('needs_confirmation')
-    expect(preview.summary).toBe("I'll click Save in TextEdit.")
-    expect(invoked).toHaveLength(0)
-    const done = await orchestrator.confirm(
-      preview.task?.id ?? '',
-      preview.approval?.approvalId ?? ''
-    )
+    const done = await orchestrator.submit('Click Save', { mode: 'guide' })
     expect(done.responseState).toBe('success')
     expect(done.summary).toContain('I pressed Save in TextEdit')
     expect(invoked).toEqual([{ name: 'Save', role: 'AXButton', processId: 42 }])

@@ -6,6 +6,7 @@ import {
   targetIdentityFrom,
   type TargetIdentity
 } from './security/ActionApproval'
+import { scopeCovers, type TaskScope } from './security/TaskScope'
 
 export interface BoundApproval extends PolicyApproval {
   taskId: string
@@ -25,6 +26,7 @@ export interface AuthorizedCall {
   taskOwned: boolean
   context: ToolContext
   liveTarget?: TargetIdentity | null
+  scope?: TaskScope | null
   onStart?: (tool: string) => void
 }
 
@@ -102,7 +104,13 @@ export class AuthorizedToolExecutor {
       source: call.source,
       now: call.now,
       screenPermission: call.screenPermission,
-      approval: call.approval
+      approval: call.approval,
+      scopeApproved: scopeCovers(call.scope, {
+        taskId: call.taskId,
+        tool: call.tool,
+        input: call.input,
+        now: call.now
+      })
     })
     if (decision.effect === 'deny') {
       return { kind: 'denied', risk: decision.risk, summary: decision.reason }
@@ -145,7 +153,7 @@ export class AuthorizedToolExecutor {
     this.busy = true
     call.onStart?.(call.tool)
     const toolInput =
-      call.approval && call.tool === 'browser.openUrl'
+      call.source === 'user' && call.tool === 'browser.openUrl'
         ? { ...call.input, confirmed: true }
         : call.input
     const work = this.registry.execute(call.tool, toolInput, call.context)

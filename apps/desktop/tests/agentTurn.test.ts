@@ -7,10 +7,24 @@ import type { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { runAgentTurn } from '../../../backend/assistant-proxy/agent.mjs'
 import {
+  acceptAgentTurn,
   agentInstructions as proxyInstructions,
   agentToolNames,
-  maxModelImageChars as proxyImageCap
+  browserChordEnum,
+  browserRoleEnum,
+  desktopChordEnum,
+  functionTools,
+  guideIdEnum,
+  maxModelImageChars as proxyImageCap,
+  settingsSectionEnum
 } from '../../../backend/assistant-proxy/agentSchemas.mjs'
+import { browserRoles } from '../src/main/agent/ports/BrowserAutomationPort'
+import {
+  desktopAllowedChords,
+  desktopKeyChords
+} from '../src/main/agent/ports/DesktopAutomationPort'
+import { guideIds } from '../src/shared/guides'
+import { systemSettingsSections } from '../src/shared/systemSettings'
 import { startProxy } from '../../../backend/assistant-proxy/server.mjs'
 import { defaultAgentBudget } from '../src/main/agent/AgentBudget'
 import { createAgentProviderClient, runConsentedAgent } from '../src/main/agent/AgentProviderClient'
@@ -19,7 +33,11 @@ import {
   observationForAgent,
   prepareModelObservation
 } from '../src/main/agent/AgentPrompt'
-import { runAgent, type AgentProvider } from '../src/main/agent/AgentRunner'
+import {
+  explainUnverifiedFinish,
+  runAgent,
+  type AgentProvider
+} from '../src/main/agent/AgentRunner'
 import { AgentSessionController } from '../src/main/agent/AgentSessionController'
 import { AuthorizedToolExecutor } from '../src/main/agent/AuthorizedToolExecutor'
 import {
@@ -109,12 +127,87 @@ describe('agent turn proxy', () => {
     expect(agentToolNames).not.toContain('payments.transfer')
     expect(agentToolNames).not.toContain('mail.send')
     expect(agentToolNames).not.toContain('shell')
+    // Stop belongs to the person, not the model.
+    expect(agentToolNames).not.toContain('tasks.cancel')
+    expect(registry.has('tasks.cancel')).toBe(true)
+  })
+
+  it('gives every exposed tool a real argument schema', () => {
+    const tools = functionTools() as Array<{
+      name: string
+      parameters: { properties: Record<string, unknown>; additionalProperties?: boolean }
+    }>
+    const vague = tools.filter(
+      (tool) =>
+        Object.keys(tool.parameters.properties).length === 0 &&
+        tool.parameters.additionalProperties === true
+    )
+    expect(vague.map((tool) => tool.name)).toEqual([])
+    const click = tools.find((tool) => tool.name === 'browser_click')
+    expect(click?.parameters).toMatchObject({ required: ['snapshotId'] })
+    const setText = tools.find((tool) => tool.name === 'desktop_setText')
+    expect(setText?.parameters).toMatchObject({
+      required: ['snapshotId', 'targetId', 'windowId', 'bundleId', 'name', 'role', 'text']
+    })
+  })
+
+  it('keeps the mirrored proxy enums in step with the desktop constants', () => {
+    expect(browserChordEnum).toEqual([...desktopKeyChords])
+    expect(desktopChordEnum).toEqual([...desktopAllowedChords])
+    expect(browserRoleEnum).toEqual([...browserRoles])
+    expect(settingsSectionEnum).toEqual([...systemSettingsSections])
+    expect(guideIdEnum).toEqual(guideIds.filter((id) => id !== 'control.point'))
+  })
+
+  it('passes the window identity a desktop tool needs through to the model', () => {
+    const observation = observationForAgent(
+      {
+        snapshotId: 'snap-1',
+        capturedAtUtc: '2026-11-08T20:00:00.000Z',
+        app: { name: 'Notes', bundleId: 'com.apple.Notes', processId: 412 },
+        window: { id: '9', title: 'Untitled' },
+        targets: [{ id: 'body', role: 'AXTextArea', name: 'Note', enabled: true }],
+        truncated: true
+      },
+      false
+    )
+    expect(observation).toMatchObject({
+      windowId: '9',
+      bundleId: 'com.apple.Notes',
+      processId: 412,
+      truncated: true
+    })
+    const forwarded = acceptAgentTurn(
+      turnBody({
+        context: {
+          stepNumber: 1,
+          summary: 'Choosing the next step.',
+          screenShare: false,
+          observation
+        }
+      })
+    )
+    expect(forwarded?.observation).toMatchObject({
+      windowId: '9',
+      bundleId: 'com.apple.Notes',
+      processId: 412,
+      truncated: true
+    })
   })
 
   it('keeps one call id across turns and does not run a tool on the proxy', async () => {
     const calls: Array<Record<string, unknown>> = []
     const script = [
-      toolResponse('resp-1', 'call-1', 'apps_listAvailable', {}),
+      toolResponse('resp-1', 'call-1', 'task_setGoalChecks', {
+        checks: [
+          {
+            id: 'open',
+            label: 'TextEdit is open',
+            anyTools: ['apps.open'],
+            appNameIncludes: 'TextEdit'
+          }
+        ]
+      }),
       toolResponse('resp-2', 'call-2', 'apps_open', {
         displayName: 'TextEdit',
         bundleId: 'com.apple.TextEdit'
@@ -152,15 +245,30 @@ describe('agent turn proxy', () => {
     expect(commands).toEqual([['-b', 'com.apple.TextEdit']])
     expect(calls).toHaveLength(4)
     expect(calls.every((call) => call.parallel_tool_calls === false)).toBe(true)
+    expect(calls[0]).toMatchObject({
+      tool_choice: { type: 'function', name: 'task_setGoalChecks' }
+    })
     expect(calls[1]).toMatchObject({ previous_response_id: 'resp-1' })
     expect(calls[1]?.input).toMatchObject([{ type: 'function_call_output', call_id: 'call-1' }])
+    // Once a plan exists the model must be free to answer `final`. Forcing a tool while
+    // any check was unmet left it no exit but tasks.cancel or another setGoalChecks.
+    expect(calls[1]?.tool_choice).toBeUndefined()
+    expect(calls.slice(1).every((call) => call.tool_choice === undefined)).toBe(true)
     expect(calls[2]).toMatchObject({ previous_response_id: 'resp-2' })
     expect(calls[2]?.input).toMatchObject([{ type: 'function_call_output', call_id: 'call-2' }])
     expect(JSON.stringify(calls)).not.toContain('server-key')
     expect(JSON.stringify(calls)).not.toContain('input_image')
     const names = (calls[0]?.tools as Array<{ name: string }>).map((tool) => tool.name)
+    expect(names).toContain('task_setGoalChecks')
     expect(names).toContain('apps_open')
     expect(names).not.toContain('payments_transfer')
+    const goalTool = (calls[0]?.tools as Array<{ name: string; parameters?: unknown }>).find(
+      (tool) => tool.name === 'task_setGoalChecks'
+    )
+    expect(goalTool?.parameters).toMatchObject({
+      required: ['checks'],
+      properties: { checks: { type: 'array' } }
+    })
     await proxy.close()
   })
 
@@ -463,7 +571,31 @@ describe('cloud agent loop', () => {
       context
     })
     expect(outcome.actionOutcome).toBe('changed_but_unverified')
-    expect(outcome.summary).toBe('I could not verify that the task was finished.')
+    expect(outcome.summary).toContain('I could not finish. Still needed:')
+  })
+
+  it('keeps the failed step in the progress when the goal is unfinished', async () => {
+    let turn = 0
+    const outcome = await runAgent({
+      goal: 'Open TextEdit',
+      provider: {
+        async next() {
+          turn += 1
+          if (turn === 1) {
+            return { type: 'tool_call', tool: 'browser.launch', args: {} }
+          }
+          return { type: 'final', text: 'Done.' }
+        }
+      },
+      session: new AgentSessionController(),
+      executor: new AuthorizedToolExecutor(createToolRegistry()),
+      context
+    })
+    expect(outcome.summary).toContain('I could not finish. Still needed:')
+    expect(
+      outcome.progress.some((entry) => entry.summary.includes("Agent Browser isn't available yet."))
+    ).toBe(true)
+    expect(explainUnverifiedFinish([])).toBe('I could not verify that the task was finished.')
   })
 
   it('stops a forbidden tool and an injected instruction before anything runs', async () => {
@@ -554,7 +686,7 @@ describe('cloud agent loop', () => {
         }
       }
     }
-    const script = Array.from({ length: 21 }, (_item, index) => ({
+    const script = Array.from({ length: defaultAgentBudget.maxActions + 1 }, (_item, index) => ({
       type: 'tool_call' as const,
       tool: 'test.note',
       args: { text: String(index) }
@@ -575,9 +707,8 @@ describe('cloud agent loop', () => {
       context,
       now: () => new Date('2026-11-05T20:00:00.000Z')
     })
-    expect(defaultAgentBudget.maxActions).toBe(20)
-    expect(started).toHaveLength(20)
-    expect(provider.index).toBe(20)
+    expect(started).toHaveLength(defaultAgentBudget.maxActions)
+    expect(provider.index).toBe(defaultAgentBudget.maxActions)
     expect(budgetRun.state).toBe('partial')
 
     let current = Date.parse('2026-11-05T20:00:00.000Z')

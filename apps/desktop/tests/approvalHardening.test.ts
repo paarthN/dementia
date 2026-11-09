@@ -286,6 +286,37 @@ describe('approvals are one-time and rechecked', () => {
     ).toMatchObject({ ok: false })
   })
 
+  it('matches browser approvals that omit a name when the snapshot id is the same', () => {
+    const held = createHeldApproval({
+      taskId: 'task-1',
+      stepId: 'step-1',
+      tool: 'browser.fill',
+      args: { snapshotId: 'snap-browser', targetId: 't1', text: 'oak', appName: 'Agent Browser' },
+      now,
+      ttlMs: 10 * 60 * 1000
+    })
+    expect(held.target.name).toBe('')
+    expect(
+      consumeHeldApproval(held, {
+        approvalId: held.approvalId,
+        now,
+        liveTarget: held.target
+      }).ok
+    ).toBe(true)
+    expect(
+      sameTargetIdentity(
+        { name: '', role: '', appName: 'Agent Browser', windowId: '', observationId: 'snap-a' },
+        {
+          name: 'Search',
+          role: 'textbox',
+          appName: 'Agent Browser',
+          windowId: '',
+          observationId: 'snap-b'
+        }
+      )
+    ).toBe(true)
+  })
+
   it('does not press Delete from chat or from a highlight', async () => {
     invoked.length = 0
     const screen = screenFor(() => snapshot([button('Delete')]))
@@ -351,6 +382,21 @@ describe('pause, stop, and private logs', () => {
           }
           step += 1
           if (step === 1) {
+            return {
+              type: 'tool_call',
+              tool: 'task.setGoalChecks',
+              args: {
+                checks: [
+                  {
+                    id: 'apps',
+                    label: 'Both apps were opened',
+                    anyTools: ['apps.open']
+                  }
+                ]
+              }
+            }
+          }
+          if (step === 2) {
             const id = session.activeId()
             if (id) {
               session.pause(id)
@@ -361,7 +407,7 @@ describe('pause, stop, and private logs', () => {
               args: { displayName: 'TextEdit', bundleId: 'com.apple.TextEdit' }
             }
           }
-          if (step === 2) {
+          if (step === 3) {
             secondStarted = true
             return {
               type: 'tool_call',
@@ -470,6 +516,19 @@ describe('pause, stop, and private logs', () => {
     const outcome = await runFakeAgent({
       goal: 'Press Save',
       provider: new FakeAgentProvider([
+        {
+          type: 'tool_call',
+          tool: 'task.setGoalChecks',
+          args: {
+            checks: [
+              {
+                id: 'save',
+                label: 'Save was pressed',
+                anyTools: ['ui.press']
+              }
+            ]
+          }
+        },
         {
           type: 'tool_call',
           tool: 'ui.press',

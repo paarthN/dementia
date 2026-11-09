@@ -15,7 +15,10 @@ import type {
 } from '../src/main/agent/ports/BrowserAutomationPort'
 import {
   agentBrowserLaunchOptions,
-  createPlaywrightAdapter
+  commandOwnsAgentBrowser,
+  createPlaywrightAdapter,
+  releaseLockedAgentBrowser,
+  singletonLockPid
 } from '../src/main/agent/ports/PlaywrightAdapter'
 import { decidePolicy } from '../src/main/services/policyEngine'
 import { createToolRegistry, type ToolContext } from '../src/main/services/toolRegistry'
@@ -150,6 +153,19 @@ describe('agent browser policy', () => {
     const outcome = await runFakeAgent({
       goal: 'Open the library page and search',
       provider: new FakeAgentProvider([
+        {
+          type: 'tool_call',
+          tool: 'task.setGoalChecks',
+          args: {
+            checks: [
+              {
+                id: 'page',
+                label: 'Library page is open',
+                anyTools: ['browser.open']
+              }
+            ]
+          }
+        },
         { type: 'tool_call', tool: 'browser.launch', args: {} },
         { type: 'tool_call', tool: 'browser.open', args: { url: 'https://example.com/library' } },
         { type: 'final', text: 'I opened the library page.' }
@@ -392,8 +408,211 @@ describe('managed Chromium', () => {
   }, 20_000)
 })
 
+describe('browser list targeting and verification', () => {
+  const listHtml = `<!doctype html>
+<html><head><title>Results</title></head>
+<body>
+  <main>
+    <h1>Results</h1>
+    <ul aria-label="Search results">
+      <li><a href="/one" id="a1">City Library</a></li>
+      <li><a href="/two" id="a2">County Library</a></li>
+      <li><a href="/three" id="a3">State Library</a></li>
+    </ul>
+    <p id="picked">none</p>
+    <p id="status">ready</p>
+    <button type="button" id="reveal">Reveal</button>
+    <button type="button" id="noop">Noop</button>
+    <button type="button" id="reorder">Reorder</button>
+  </main>
+  <script>
+    for (const id of ['a1', 'a2', 'a3']) {
+      document.getElementById(id).addEventListener('click', (event) => {
+        event.preventDefault()
+        document.getElementById('picked').textContent = id
+      })
+    }
+    document.getElementById('reveal').addEventListener('click', () => {
+      setTimeout(() => {
+        document.getElementById('status').textContent = 'Oak Street confirmed'
+      }, 150)
+    })
+    document.getElementById('noop').addEventListener('click', () => {})
+    document.getElementById('reorder').addEventListener('click', () => {
+      const list = document.querySelector('ul')
+      list.append(list.firstElementChild)
+      document.getElementById('status').textContent = 'reordered'
+    })
+  </script>
+</body></html>`
+
+  it('clicks the second list result by identity after the list reorders', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'companion-list-browser-'))
+    const server = createServer((_request, response) => {
+      response.setHeader('content-type', 'text/html; charset=utf-8')
+      response.end(listHtml)
+    })
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve())
+    })
+    const address = server.address()
+    const port = typeof address === 'object' && address ? address.port : 0
+    const origin = `http://127.0.0.1:${port}`
+    const adapter = createPlaywrightAdapter({
+      profileDir,
+      headed: false,
+      fixtureOrigins: [origin],
+      snapshotTtlMs: 60_000
+    })
+    try {
+      expect((await adapter.launch({})).status).toBe('success_verified')
+      expect((await adapter.open({ url: `${origin}/` })).status).toBe('success_verified')
+      const seen = await adapter.observe({})
+      const county = seen.observation?.targets.find((item) => item.name === 'County Library')
+      expect(county?.inListIndex).toBe(2)
+
+      const second = await adapter.click({
+        snapshotId: seen.observation?.snapshotId ?? '',
+        query: {
+          role: 'link',
+          within: { role: 'list', name: 'Search results', itemOrdinal: 2 }
+        },
+        expectTextIncludes: 'a2'
+      })
+      expect(second).toMatchObject({ status: 'success_verified' })
+
+      const beforeReorder = await adapter.observe({})
+      await adapter.click({
+        snapshotId: beforeReorder.observation?.snapshotId ?? '',
+        targetId: target(beforeReorder.observation, 'Reorder', 'button')?.id ?? '',
+        expectTextIncludes: 'reordered'
+      })
+
+      const afterReorder = await adapter.observe({})
+      expect(
+        afterReorder.observation?.targets.find((item) => item.name === 'County Library')
+          ?.inListIndex
+      ).toBe(1)
+      // Put a different result in focus so the County click must change the page.
+      await adapter.click({
+        snapshotId: afterReorder.observation?.snapshotId ?? '',
+        targetId:
+          afterReorder.observation?.targets.find((item) => item.name === 'City Library')?.id ?? ''
+      })
+
+      const byOldSnapshot = await adapter.click({
+        snapshotId: beforeReorder.observation?.snapshotId ?? '',
+        targetId:
+          beforeReorder.observation?.targets.find((item) => item.name === 'County Library')?.id ??
+          '',
+        expectTextIncludes: 'a2'
+      })
+      expect(byOldSnapshot).toMatchObject({ status: 'success_verified' })
+      const picked = await adapter.observe({})
+      expect(picked.observation?.untrustedText).toContain('a2')
+    } finally {
+      await adapter.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()))
+      })
+      await rm(profileDir, { recursive: true, force: true })
+    }
+  }, 60_000)
+
+  it('requires new evidence for expectTextIncludes and supports scoped observe', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'companion-verify-browser-'))
+    const server = createServer((_request, response) => {
+      response.setHeader('content-type', 'text/html; charset=utf-8')
+      response.end(listHtml)
+    })
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve())
+    })
+    const address = server.address()
+    const port = typeof address === 'object' && address ? address.port : 0
+    const origin = `http://127.0.0.1:${port}`
+    const adapter = createPlaywrightAdapter({
+      profileDir,
+      headed: false,
+      fixtureOrigins: [origin],
+      snapshotTtlMs: 60_000
+    })
+    try {
+      expect((await adapter.launch({})).status).toBe('success_verified')
+      expect((await adapter.open({ url: `${origin}/` })).status).toBe('success_verified')
+      const seen = await adapter.observe({})
+      const alreadyThere = await adapter.click({
+        snapshotId: seen.observation?.snapshotId ?? '',
+        targetId: target(seen.observation, 'Noop', 'button')?.id ?? '',
+        expectTextIncludes: 'ready'
+      })
+      expect(alreadyThere).toMatchObject({ status: 'changed_but_unverified' })
+
+      const fresh = await adapter.observe({})
+      const revealed = await adapter.click({
+        snapshotId: fresh.observation?.snapshotId ?? '',
+        targetId: target(fresh.observation, 'Reveal', 'button')?.id ?? '',
+        expectTextIncludes: 'Oak Street'
+      })
+      expect(revealed).toMatchObject({ status: 'success_verified' })
+
+      const scoped = await adapter.observe({
+        within: { role: 'list', name: 'Search results' }
+      })
+      expect(scoped.observation?.targets.every((item) => item.inListIndex !== undefined)).toBe(true)
+      expect(scoped.observation?.targets.some((item) => item.name === 'Reveal')).toBe(false)
+      expect(scoped.observation?.targets.some((item) => item.name === 'County Library')).toBe(true)
+    } finally {
+      await adapter.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()))
+      })
+      await rm(profileDir, { recursive: true, force: true })
+    }
+  }, 60_000)
+})
+
 describe('stale browser snapshot', () => {
-  it('does not click after the reading expires', async () => {
+  it('rematches by name when the snapshot id is unknown', async () => {
+    const profileDir = await mkdtemp(join(tmpdir(), 'companion-name-rematch-'))
+    const server = createServer((_request, response) => {
+      response.setHeader('content-type', 'text/html; charset=utf-8')
+      response.end(fixtureHtml)
+    })
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve())
+    })
+    const address = server.address()
+    const port = typeof address === 'object' && address ? address.port : 0
+    const origin = `http://127.0.0.1:${port}`
+    const adapter = createPlaywrightAdapter({
+      profileDir,
+      headed: false,
+      fixtureOrigins: [origin],
+      snapshotTtlMs: 60_000
+    })
+    try {
+      expect((await adapter.launch({})).status).toBe('success_verified')
+      expect((await adapter.open({ url: `${origin}/` })).status).toBe('success_verified')
+      const clicked = await adapter.click({
+        snapshotId: 'not-a-real-snapshot',
+        targetId: 't-missing',
+        name: 'Show the note',
+        role: 'button'
+      })
+      expect(clicked).toMatchObject({ status: 'success_verified' })
+      const seen = await adapter.observe({})
+      expect(seen.observation?.untrustedText).toContain('The nearest library is on Oak Street.')
+    } finally {
+      await adapter.close()
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()))
+      })
+      await rm(profileDir, { recursive: true, force: true })
+    }
+  }, 40_000)
+
+  it('looks again and clicks after the reading expires', async () => {
     const profileDir = await mkdtemp(join(tmpdir(), 'companion-stale-browser-'))
     let now = 1_000_000
     const server = createServer((_request, response) => {
@@ -414,20 +633,20 @@ describe('stale browser snapshot', () => {
       fixtureOrigins: [origin]
     })
     try {
-      await adapter.launch({})
-      await adapter.open({ url: `${origin}/` })
+      expect((await adapter.launch({})).status).toBe('success_verified')
+      expect((await adapter.open({ url: `${origin}/` })).status).toBe('success_verified')
       const seen = await adapter.observe({})
+      expect(seen.status).toBe('success_verified')
+      expect(adapter.isOpen()).toBe(true)
       now += 3_001
       const click = await adapter.click({
         snapshotId: seen.observation?.snapshotId ?? '',
         targetId: target(seen.observation, 'Show the note', 'button')?.id ?? ''
       })
-      expect(click).toMatchObject({ status: 'failed', errorCode: 'stale_snapshot' })
+      expect(click).toMatchObject({ status: 'success_verified' })
       now += 1
       const again = await adapter.observe({})
-      expect(again.observation?.untrustedText).not.toContain(
-        'The nearest library is on Oak Street.'
-      )
+      expect(again.observation?.untrustedText).toContain('The nearest library is on Oak Street.')
     } finally {
       await adapter.close()
       await new Promise<void>((resolve, reject) => {
@@ -509,3 +728,39 @@ function fakeBrowser(calls: string[]): BrowserAutomationPort {
     }
   }
 }
+
+describe('Agent Browser profile lock', () => {
+  it('closes only the leftover Companion browser', async () => {
+    const killed: Array<[number, NodeJS.Signals]> = []
+    const released = await releaseLockedAgentBrowser('/tmp/agent-browser', {
+      lockTarget: async () => 'Paarths-MacBook-Air.local-48616',
+      commandOf: async () =>
+        '/Applications/Google Chrome for Testing.app --user-data-dir=/tmp/agent-browser',
+      kill: (pid, signal) => {
+        killed.push([pid, signal])
+      },
+      alive: () => false,
+      wait: async () => undefined
+    })
+    expect(singletonLockPid('Paarths-MacBook-Air.local-48616')).toBe(48616)
+    expect(released).toBe(true)
+    expect(killed).toEqual([[48616, 'SIGTERM']])
+    const spared = await releaseLockedAgentBrowser('/tmp/agent-browser', {
+      lockTarget: async () => 'host-9',
+      commandOf: async () =>
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/Users/me/Chrome',
+      kill: () => {
+        throw new Error('killed the user browser')
+      },
+      alive: () => true,
+      wait: async () => undefined
+    })
+    expect(spared).toBe(false)
+    expect(
+      commandOwnsAgentBrowser(
+        'Google Chrome for Testing --user-data-dir=/tmp/agent-browser',
+        '/tmp/agent-browser'
+      )
+    ).toBe(true)
+  })
+})

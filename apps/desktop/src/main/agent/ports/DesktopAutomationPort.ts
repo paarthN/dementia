@@ -12,6 +12,11 @@ export const desktopKeyChords = [
   'end'
 ] as const
 
+/** Chords the Peekaboo path accepts beyond the navigation keys. */
+export const desktopExtraChords = ['return', 'delete', 'cmd+a', 'cmd+n', 'cmd+v'] as const
+
+export const desktopAllowedChords = [...desktopKeyChords, ...desktopExtraChords] as const
+
 export const desktopTextLimit = 500
 export const desktopSnapshotTtlMs = 3_000
 
@@ -47,6 +52,7 @@ export interface DesktopObservation {
   protected: boolean
   truncated: boolean
   imageIncluded: boolean
+  contextText?: string
   image?: DesktopImage
 }
 
@@ -115,6 +121,10 @@ export interface DesktopAutomationPort {
       bundleId: string
       processId: number
     },
+    options?: DesktopCallOptions
+  ): Promise<DesktopOutcome>
+  clickPoint(
+    input: { snapshotId: string; windowId: string; x: number; y: number },
     options?: DesktopCallOptions
   ): Promise<DesktopOutcome>
 }

@@ -96,6 +96,9 @@ function desktop(observation: DesktopObservation = observed()): DesktopAutomatio
     },
     async scroll() {
       return { status: 'failed', summary: 'unused' }
+    },
+    async clickPoint() {
+      return { status: 'failed', summary: 'unused' }
     }
   }
 }

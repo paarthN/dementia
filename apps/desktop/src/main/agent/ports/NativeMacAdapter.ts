@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { redactSecretText } from '../AgentPrompt'
 import {
   HelperCallError,
   HelperUnavailable,
@@ -636,9 +637,12 @@ export function createNativeMacAdapter(options: {
       }
       const after = sameTarget(verified.stored, match)
       if (!isOutcome(after) && after.value === input.text && parsed.data.verified === true) {
+        // Echo the confirmed text so a goal check asking whether it landed has
+        // something to read — stripValues() below removes it from the observation,
+        // and nothing else in this path ever surfaces it.
         return {
           status: 'success_verified',
-          summary: `I typed into ${match.name}.`,
+          summary: `I typed "${redactSecretText(input.text).slice(0, 120)}" into ${match.name}.`,
           observation: observationFrom(stripValues(verified.stored))
         }
       }
@@ -776,6 +780,14 @@ export function createNativeMacAdapter(options: {
         status: 'changed_but_unverified',
         summary: 'I tried to scroll, but I could not see the scrollbar move.',
         errorCode: 'changed_but_unverified'
+      }
+    },
+
+    async clickPoint() {
+      return {
+        status: 'unsupported' as const,
+        summary: 'I can press a named control. I will not click a bare spot.',
+        errorCode: 'unsupported'
       }
     }
   }

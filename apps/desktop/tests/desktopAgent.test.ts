@@ -190,7 +190,12 @@ describe('native Mac desktop adapter', () => {
     const seen = await adapter.observe({})
     const typed = await adapter.setText({ ...elementFrom(seen), text: noteText })
     expect(typed.status).toBe('success_verified')
-    expect(JSON.stringify(typed)).not.toContain(noteText)
+    // The typed text never shows up in the window's own visible text, so the summary
+    // must carry it — otherwise a goal check asking whether it landed has no evidence
+    // to read. observationFrom(stripValues(...)) still keeps the raw value out of the
+    // returned observation; only the already-confirmed summary carries it.
+    expect(typed.summary).toContain(noteText)
+    expect(JSON.stringify(typed.observation)).not.toContain(noteText)
     expect(calls.filter((method) => method === 'desktop.setText')).toEqual(['desktop.setText'])
   })
 

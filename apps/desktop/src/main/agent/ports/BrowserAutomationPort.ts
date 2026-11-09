@@ -8,10 +8,27 @@ export const browserRoles = [
   'searchbox'
 ] as const
 
-export const browserTextLimit = 500
+export const browserAncestorRoles = [
+  'dialog',
+  'alertdialog',
+  'main',
+  'navigation',
+  'complementary',
+  'form',
+  'region',
+  'list',
+  'listitem',
+  'article',
+  'group'
+] as const
+
+export const browserTextLimit = 4_000
 export const browserSnapshotTtlMs = 3_000
+export const browserTargetSoftCap = 80
+export const browserScopedTargetCap = 80
 
 export type BrowserRole = (typeof browserRoles)[number]
+export type BrowserAncestorRole = (typeof browserAncestorRoles)[number]
 
 export type BrowserStatus =
   | 'success_verified'
@@ -23,12 +40,35 @@ export type BrowserStatus =
   | 'cancelled'
   | 'unsupported'
 
+export interface BrowserAncestor {
+  role: BrowserAncestorRole | string
+  name?: string
+}
+
 export interface BrowserTarget {
   id: string
   role: BrowserRole
   name: string
   enabled: boolean
   sensitive: boolean
+  ancestors: BrowserAncestor[]
+  inListIndex?: number
+}
+
+export interface BrowserWithin {
+  role: string
+  name?: string
+  nameIncludes?: string
+  itemOrdinal?: number
+}
+
+export interface BrowserTargetQuery {
+  role: BrowserRole
+  name?: string
+  nameIncludes?: string
+  /** Rejected: ordinals are list-relative via within.itemOrdinal. */
+  ordinal?: number
+  within?: BrowserWithin
 }
 
 export interface BrowserImage {
@@ -70,16 +110,27 @@ export interface BrowserCallOptions {
 
 export interface BrowserElementInput {
   snapshotId: string
-  targetId: string
+  targetId?: string
+  /** Set by the runner from the current observation so stale snapshot ids can rematch. */
+  name?: string
+  role?: BrowserRole
+  /** Copied from the observed target so ambiguous names (two Saves) rematch uniquely. */
+  ancestors?: BrowserAncestor[]
+  query?: BrowserTargetQuery
+  expectUrlIncludes?: string
+  expectTextIncludes?: string
+}
+
+export interface BrowserObserveInput {
+  includeImage?: boolean
+  consent?: boolean
+  within?: BrowserWithin
 }
 
 export interface BrowserAutomationPort {
   launch(input: Record<string, unknown>, options?: BrowserCallOptions): Promise<BrowserOutcome>
   open(input: { url: string }, options?: BrowserCallOptions): Promise<BrowserOutcome>
-  observe(
-    input: { includeImage?: boolean; consent?: boolean },
-    options?: BrowserCallOptions
-  ): Promise<BrowserOutcome>
+  observe(input: BrowserObserveInput, options?: BrowserCallOptions): Promise<BrowserOutcome>
   click(input: BrowserElementInput, options?: BrowserCallOptions): Promise<BrowserOutcome>
   fill(
     input: BrowserElementInput & { text: string },

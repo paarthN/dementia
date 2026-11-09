@@ -132,7 +132,7 @@ describe('cloud assistant', () => {
     expect(tools).toEqual([])
   })
 
-  it('still asks before an uncertain reminder from the model', async () => {
+  it('saves an uncertain reminder from the model without asking first', async () => {
     const tools: string[] = []
     const outcome = await new TaskOrchestrator({
       db: database(),
@@ -152,8 +152,8 @@ describe('cloud assistant', () => {
         requiresScreenContext: false
       })
     }).submit('remind me to call Jim tomorrow at four')
-    expect(outcome.responseState).toBe('needs_confirmation')
-    expect(tools).toEqual([])
+    expect(outcome.responseState).not.toBe('needs_confirmation')
+    expect(tools).toEqual(['reminders.create'])
   })
 
   it('stops when the assistant server does not answer', async () => {

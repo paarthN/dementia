@@ -304,7 +304,8 @@ describe('agent approval gate', () => {
           clickElement: async () => ({ status: 'failed', summary: 'no' }),
           setText: async () => ({ status: 'failed', summary: 'no' }),
           keyPress: async () => ({ status: 'failed', summary: 'no' }),
-          scroll: async () => ({ status: 'failed', summary: 'no' })
+          scroll: async () => ({ status: 'failed', summary: 'no' }),
+          clickPoint: async () => ({ status: 'failed', summary: 'no' })
         }
       }
     )
@@ -319,6 +320,20 @@ describe('runner status', () => {
     await runFakeAgent({
       goal: 'Open TextEdit',
       provider: new FakeAgentProvider([
+        {
+          type: 'tool_call',
+          tool: 'task.setGoalChecks',
+          args: {
+            checks: [
+              {
+                id: 'open',
+                label: 'TextEdit is open',
+                anyTools: ['apps.open'],
+                appNameIncludes: 'TextEdit'
+              }
+            ]
+          }
+        },
         {
           type: 'tool_call',
           tool: 'apps.open',
@@ -348,6 +363,19 @@ describe('runner status', () => {
     const outcome = runFakeAgent({
       goal: 'Press Save',
       provider: new FakeAgentProvider([
+        {
+          type: 'tool_call',
+          tool: 'task.setGoalChecks',
+          args: {
+            checks: [
+              {
+                id: 'save',
+                label: 'Save was pressed',
+                anyTools: ['test.save']
+              }
+            ]
+          }
+        },
         {
           type: 'tool_call',
           tool: 'test.save',
